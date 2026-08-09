@@ -41,6 +41,8 @@ MESSAGE_TYPE ?= mixed
 UDP_PORT ?= 9000
 IDLE_MS ?= 2000
 LATENCY_CSV ?=
+DIRECT_SHM ?= /spectral_direct
+DIRECT_PINNED ?= 1
 
 NETEM_DELAY ?= 0us
 NETEM_JITTER ?= 0us
@@ -77,7 +79,7 @@ endef
 .PHONY: \
 	all configure transport-build harness-build build test clean help setup-sudo \
 	net-up net-status netem-set netem-clear net-down \
-	run-test \
+	run-test run-direct-test \
 	run-producer run-sender run-receiver run-consumer \
 	process-status shm-clean
 
@@ -332,6 +334,96 @@ net-down:
 	done
 	echo "net-down: removed $(TX_NAMESPACE) and $(RX_NAMESPACE)"
 
+run-direct-test:
+	@set -euo pipefail
+	for binary in "$(HARNESS_BIN)/producer" "$(HARNESS_BIN)/consumer"; do
+		if [[ ! -x "$$binary" ]]; then
+			echo "run-direct-test: missing $$binary; run 'make build'" >&2
+			exit 1
+		fi
+	done
+	pinned="$(DIRECT_PINNED)"
+	if [[ "$$pinned" != 0 && "$$pinned" != 1 ]]; then
+		echo "run-direct-test: DIRECT_PINNED must be 0 or 1" >&2
+		exit 2
+	fi
+	shm_name="$(DIRECT_SHM)"
+	name_re='^/[A-Za-z0-9_.-]+$$'
+	if [[ ! "$$shm_name" =~ $$name_re ]]; then
+		echo "run-direct-test: invalid shared-memory name" >&2
+		exit 2
+	fi
+	shm_file="/dev/shm/$${shm_name#/}"
+	latency_csv="$(LATENCY_CSV)"
+	if [[ -n "$$latency_csv" ]]; then
+		mkdir -p "$$(dirname -- "$$latency_csv")"
+		rm -f -- "$$latency_csv"
+	fi
+	consumer_args=(--shm "$$shm_name" --slots "$(SHM_SLOTS)" --from-edge \
+		--count "$(MESSAGE_COUNT)" --idle-ms "$(IDLE_MS)")
+	if [[ -n "$$latency_csv" ]]; then
+		consumer_args+=(--csv "$$latency_csv")
+	fi
+	log_dir="$(CURDIR)/build/run-direct-test"
+	mkdir -p "$$log_dir"
+	rm -f -- "$$log_dir/producer.log" "$$log_dir/consumer.log" "$$shm_file"
+	producer_prefix=()
+	consumer_prefix=()
+	if [[ "$$pinned" == 1 ]]; then
+		producer_prefix=($(TASKSET) -c "$(PRODUCER_CPU)")
+		consumer_prefix=($(TASKSET) -c "$(CONSUMER_CPU)")
+	fi
+	producer_pid=""
+	cleanup() {
+		if [[ -n "$$producer_pid" ]] && kill -0 "$$producer_pid" 2>/dev/null; then
+			kill "$$producer_pid" 2>/dev/null || true
+		fi
+		if [[ -n "$$producer_pid" ]]; then
+			wait "$$producer_pid" 2>/dev/null || true
+		fi
+		rm -f -- "$$shm_file"
+	}
+	trap cleanup EXIT INT TERM
+	"$${producer_prefix[@]}" "$(HARNESS_BIN)/producer" \
+		--shm "$$shm_name" --slots "$(SHM_SLOTS)" --count 0 \
+		--rate "$(MESSAGE_RATE)" --type "$(MESSAGE_TYPE)" \
+		>"$$log_dir/producer.log" 2>&1 &
+	producer_pid=$$!
+	for _ in $$(seq 1 200); do
+		if grep -q '^producer: shm=' "$$log_dir/producer.log" 2>/dev/null; then break; fi
+		if ! kill -0 "$$producer_pid" 2>/dev/null; then break; fi
+		sleep 0.01
+	done
+	if ! grep -q '^producer: shm=' "$$log_dir/producer.log"; then
+		sed -n '1,200p' "$$log_dir/producer.log" >&2
+		exit 1
+	fi
+	set +e
+	"$${consumer_prefix[@]}" "$(HARNESS_BIN)/consumer" \
+		"$${consumer_args[@]}" \
+		>"$$log_dir/consumer.log" 2>&1
+	consumer_status=$$?
+	set -e
+	cleanup
+	producer_pid=""
+	trap - EXIT INT TERM
+	if (( consumer_status != 0 )); then
+		for log in producer consumer; do
+			echo "--- $$log ---" >&2
+			sed -n '1,200p' "$$log_dir/$$log.log" >&2
+		done
+		exit 1
+	fi
+	if [[ -n "$$latency_csv" && ! -s "$$latency_csv" ]]; then
+		echo "run-direct-test: consumer did not write $$latency_csv" >&2
+		exit 1
+	fi
+	sed -n '1,200p' "$$log_dir/consumer.log"
+	if [[ -n "$$latency_csv" ]]; then
+		echo "run-direct-test: latency samples saved in $$latency_csv"
+	fi
+	echo "run-direct-test: logs saved in $$log_dir"
+
 run-test:
 	@set -euo pipefail
 	for binary in \
@@ -534,6 +626,7 @@ help:
 	echo "  make net-down               remove the test network"
 	echo
 	echo "End-to-end tests (run 'make build' after code changes):"
+	echo "  make run-direct-test        direct producer-to-consumer SHM path"
 	echo "  make run-test               use the active veth/netem configuration"
 	echo
 	echo "Individual processes (one foreground command per terminal):"

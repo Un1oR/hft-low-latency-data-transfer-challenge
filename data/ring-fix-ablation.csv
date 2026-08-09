@@ -1,0 +1,46 @@
+series,variant,run,samples,p50_ns,p99_ns
+publication-window,original byte copy,1,200000,191,781
+publication-window,original byte copy,2,200000,217,3492
+publication-window,original byte copy,3,200000,234,3632
+publication-window,original byte copy,4,200000,192,754
+publication-window,original byte copy,5,200000,192,749
+publication-window,invalidate before byte copy,1,200000,194,785
+publication-window,invalidate before byte copy,2,200000,193,739
+publication-window,invalidate before byte copy,3,200000,192,734
+publication-window,invalidate before byte copy,4,200000,193,754
+publication-window,invalidate before byte copy,5,200000,194,733
+strict-fix-ab,original byte copy,1,100000,194,1218
+strict-fix-ab,atomic64 aligned,1,100000,158,761
+strict-fix-ab,original byte copy,2,100000,194,741
+strict-fix-ab,atomic64 aligned,2,100000,165,884
+strict-fix-ab,original byte copy,3,100000,195,779
+strict-fix-ab,atomic64 aligned,3,100000,159,733
+copy-layout,atomic32 original offset,1,100000,282,1194
+copy-layout,atomic32 original offset,2,100000,273,1072
+copy-layout,atomic32 original offset,3,100000,269,797
+copy-layout,atomic32 original offset,4,100000,284,2138
+copy-layout,atomic32 original offset,5,100000,274,1113
+copy-layout,atomic64 middle original offset,1,100000,240,954
+copy-layout,atomic64 middle original offset,2,100000,225,636
+copy-layout,atomic64 middle original offset,3,100000,228,820
+copy-layout,atomic64 middle original offset,4,100000,225,627
+copy-layout,atomic64 middle original offset,5,100000,238,960
+copy-layout,atomic64 aligned,1,100000,181,2273
+copy-layout,atomic64 aligned,2,100000,184,3206
+copy-layout,atomic64 aligned,3,100000,201,3627
+copy-layout,atomic64 aligned,4,100000,204,3665
+copy-layout,atomic64 aligned,5,100000,198,3754
+writer-cursor,shared atomic cursor,1,100000,174,961
+writer-cursor,local writer cursor,1,100000,159,415
+writer-cursor,local writer cursor,2,100000,160,764
+writer-cursor,shared atomic cursor,2,100000,163,748
+writer-cursor,shared atomic cursor,3,100000,167,939
+writer-cursor,local writer cursor,3,100000,164,775
+writer-cursor,local writer cursor,4,100000,161,727
+writer-cursor,shared atomic cursor,4,100000,178,1495
+writer-cursor,shared atomic cursor,5,100000,163,739
+writer-cursor,local writer cursor,5,100000,181,1052
+writer-cursor,local writer cursor,6,100000,161,447
+writer-cursor,shared atomic cursor,6,100000,164,446
+writer-cursor,shared atomic cursor,7,100000,166,746
+writer-cursor,local writer cursor,7,100000,163,895

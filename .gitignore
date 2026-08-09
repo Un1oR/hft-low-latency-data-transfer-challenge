@@ -3,6 +3,6 @@
 /.idea/
 /.venv/
 /.ipynb_checkpoints/
-/data/*.csv
+/data/latency*.csv
 __pycache__/
 *.py[cod]
