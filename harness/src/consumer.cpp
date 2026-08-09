@@ -5,11 +5,13 @@
 //
 // Usage: consumer [--shm NAME] [--slots N] [--count N] [--from-edge]
 //                 [--csv FILE] [--idle-ms MS]
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "message.h"
 #include "metrics.h"
@@ -69,6 +71,32 @@ void print_report(const metrics::Report& r) {
   printf("  p99.99     : %llu\n", (unsigned long long)r.p9999);
 }
 
+bool write_csv(const std::string& path,
+               const std::vector<metrics::Observation>& observations) {
+  FILE* csv = std::fopen(path.c_str(), "w");
+  if (!csv) {
+    std::fprintf(stderr, "fopen(%s) failed: %s\n", path.c_str(),
+                 std::strerror(errno));
+    return false;
+  }
+
+  bool ok = std::fprintf(csv, "seq,latency_ns\n") >= 0;
+  for (const auto& observation : observations) {
+    if (std::fprintf(csv, "%llu,%llu\n",
+                     (unsigned long long)observation.seq_id,
+                     (unsigned long long)observation.latency_ns) < 0) {
+      ok = false;
+      break;
+    }
+  }
+  if (std::fclose(csv) != 0) ok = false;
+  if (!ok) {
+    std::fprintf(stderr, "failed to write CSV %s: %s\n", path.c_str(),
+                 std::strerror(errno));
+  }
+  return ok;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -80,12 +108,6 @@ int main(int argc, char** argv) {
   ring.attach(seg.base(), cfg.slots, /*init=*/false);
 
   metrics::Accumulator acc(cfg.count ? cfg.count : 1u << 20);
-
-  FILE* csv = nullptr;
-  if (!cfg.csv.empty()) {
-    csv = std::fopen(cfg.csv.c_str(), "w");
-    if (csv) std::fprintf(csv, "seq,latency_ns\n");
-  }
 
   uint64_t read_index = cfg.from_edge ? ring.live_edge() : 0;
   uint64_t received = 0;
@@ -105,9 +127,6 @@ int main(int argc, char** argv) {
       const uint64_t latency =
           recv_ts > hdr->send_ts_ns ? recv_ts - hdr->send_ts_ns : 0;
       acc.record(hdr->seq_id, latency);
-      if (csv) std::fprintf(csv, "%llu,%llu\n",
-                            (unsigned long long)hdr->seq_id,
-                            (unsigned long long)latency);
       ++received;
       ++read_index;
       last_progress = recv_ts;
@@ -119,10 +138,9 @@ int main(int argc, char** argv) {
     }
   }
 
-  if (csv) std::fclose(csv);
-
   fprintf(stderr, "consumer: lapped %llu times\n",
           (unsigned long long)lapped_events);
   print_report(acc.report());
+  if (!cfg.csv.empty() && !write_csv(cfg.csv, acc.observations())) return 1;
   return 0;
 }

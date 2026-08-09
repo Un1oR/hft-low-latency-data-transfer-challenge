@@ -40,6 +40,7 @@ MESSAGE_RATE ?= 100000
 MESSAGE_TYPE ?= mixed
 UDP_PORT ?= 9000
 IDLE_MS ?= 2000
+LATENCY_CSV ?=
 
 NETEM_DELAY ?= 0us
 NETEM_JITTER ?= 0us
@@ -69,7 +70,8 @@ endef
 define consumer_command
 $(TASKSET) -c "$(CONSUMER_CPU)" "$(HARNESS_BIN)/consumer" \
 	--shm "$(1)" --slots "$(2)" \
-	--count "$(3)" --from-edge --idle-ms "$(4)"
+	--count "$(3)" --from-edge --idle-ms "$(4)" \
+	$(if $(strip $(LATENCY_CSV)),--csv "$(LATENCY_CSV)")
 endef
 
 .PHONY: \
@@ -350,6 +352,11 @@ run-test:
 	destination="$(RX_ADDRESS)"
 	port="$(UDP_PORT)"
 	idle_ms="$(IDLE_MS)"
+	latency_csv="$(LATENCY_CSV)"
+	if [[ -n "$$latency_csv" ]]; then
+		mkdir -p "$$(dirname -- "$$latency_csv")"
+		rm -f -- "$$latency_csv"
+	fi
 	sender_exec=($(SUDO) $(NETNS_EXEC) "$(TX_NAMESPACE)")
 	receiver_exec=($(SUDO) $(NETNS_EXEC) "$(RX_NAMESPACE)")
 	for spec in \
@@ -450,9 +457,16 @@ run-test:
 		done
 		exit 1
 	fi
+	if [[ -n "$$latency_csv" && ! -s "$$latency_csv" ]]; then
+		echo "run-test: consumer did not write $$latency_csv" >&2
+		exit 1
+	fi
 	sed -n '1,200p' "$$log_dir/sender.log"
 	sed -n '1,200p' "$$log_dir/receiver.log"
 	sed -n '1,200p' "$$log_dir/consumer.log"
+	if [[ -n "$$latency_csv" ]]; then
+		echo "run-test: latency samples saved in $$latency_csv"
+	fi
 	echo "run-test: logs saved in $$log_dir"
 
 run-producer:

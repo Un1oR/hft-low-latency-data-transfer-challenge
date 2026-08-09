@@ -22,10 +22,15 @@ struct Report {
   uint64_t p01 = 0, p50 = 0, p99 = 0, p999 = 0, p9999 = 0;
 };
 
+struct Observation {
+  uint64_t seq_id;
+  uint64_t latency_ns;
+};
+
 class Accumulator {
  public:
   explicit Accumulator(size_t reserve = 0) {
-    if (reserve) latencies_.reserve(reserve);
+    if (reserve) observations_.reserve(reserve);
   }
 
   void record(uint64_t seq_id, uint64_t latency_ns) {
@@ -37,8 +42,12 @@ class Accumulator {
       if (seq_id > last_seq_) last_seq_ = seq_id;
     }
     ++received_;
-    latencies_.push_back(latency_ns);
+    observations_.push_back({seq_id, latency_ns});
     sum_ += static_cast<double>(latency_ns);
+  }
+
+  const std::vector<Observation>& observations() const {
+    return observations_;
   }
 
   Report report() const {
@@ -52,7 +61,11 @@ class Accumulator {
                                    static_cast<double>(r.expected)
                              : 0.0;
 
-    std::vector<uint64_t> s = latencies_;
+    std::vector<uint64_t> s;
+    s.reserve(observations_.size());
+    for (const auto& observation : observations_) {
+      s.push_back(observation.latency_ns);
+    }
     std::sort(s.begin(), s.end());
     r.lat_min = s.front();
     r.lat_max = s.back();
@@ -81,7 +94,7 @@ class Accumulator {
   uint64_t first_seq_ = 0;
   uint64_t last_seq_ = 0;
   double sum_ = 0.0;
-  std::vector<uint64_t> latencies_;
+  std::vector<Observation> observations_;
 };
 
 }  // namespace metrics

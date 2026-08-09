@@ -26,6 +26,11 @@ static void test_metrics_basic() {
   assert(r.p50 == 50);
   assert(r.p99 == 99);
   assert(r.lat_mean > 50.0 && r.lat_mean < 51.0);
+  assert(acc.observations().size() == 100);
+  assert(acc.observations().front().seq_id == 1);
+  assert(acc.observations().front().latency_ns == 1);
+  assert(acc.observations().back().seq_id == 100);
+  assert(acc.observations().back().latency_ns == 100);
   printf("test_metrics_basic OK\n");
 }
 
