@@ -1,0 +1,27 @@
+# Allow the local benchmark harness to manage only its two network namespaces,
+# its veth pair, and netem qdiscs attached to that pair.
+
+Cmnd_Alias SPECTRAL_NS_ENTER = /usr/local/libexec/spectral-netns-exec *
+
+Cmnd_Alias SPECTRAL_NET_SETUP = \
+    /usr/bin/ip netns add spectral-tx, \
+    /usr/bin/ip netns add spectral-rx, \
+    /usr/bin/ip link add veth-tx type veth peer name veth-rx, \
+    /usr/bin/ip link set veth-tx netns spectral-tx, \
+    /usr/bin/ip link set veth-rx netns spectral-rx, \
+    /usr/bin/ip -n spectral-tx address replace 10.200.0.1/30 dev veth-tx, \
+    /usr/bin/ip -n spectral-rx address replace 10.200.0.2/30 dev veth-rx, \
+    /usr/bin/ip -n spectral-tx link set lo up, \
+    /usr/bin/ip -n spectral-rx link set lo up, \
+    /usr/bin/ip -n spectral-tx link set veth-tx mtu 1500 up, \
+    /usr/bin/ip -n spectral-rx link set veth-rx mtu 1500 up, \
+    /usr/bin/ip netns delete spectral-tx, \
+    /usr/bin/ip netns delete spectral-rx
+
+Cmnd_Alias SPECTRAL_NETEM = \
+    /usr/bin/ip netns exec spectral-tx /usr/sbin/tc qdisc replace dev veth-tx root netem *, \
+    /usr/bin/ip netns exec spectral-rx /usr/sbin/tc qdisc replace dev veth-rx root netem *, \
+    /usr/bin/ip netns exec spectral-tx /usr/sbin/tc qdisc del dev veth-tx root, \
+    /usr/bin/ip netns exec spectral-rx /usr/sbin/tc qdisc del dev veth-rx root
+
+%spectral-bench ALL=(root) NOPASSWD: SPECTRAL_NS_ENTER, SPECTRAL_NET_SETUP, SPECTRAL_NETEM

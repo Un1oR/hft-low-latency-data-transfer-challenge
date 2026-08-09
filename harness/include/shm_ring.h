@@ -22,6 +22,13 @@ inline constexpr uint32_t kFrameCap = msg::kMaxFrame;
 
 inline constexpr uint32_t kCacheLine = 64;
 
+// Fixed shared-memory ABI used by independently built harness and transport
+// binaries. Keep these values stable unless the SHM format is versioned.
+inline constexpr size_t kHeaderWriteIndexOffset = 64;
+inline constexpr size_t kHeaderSize = 128;
+inline constexpr size_t kSlotFrameOffset = 12;
+inline constexpr size_t kSlotSize = 640;
+
 struct alignas(kCacheLine) Slot {
   // Publication sequence for this slot; 0 means "never written". The producer
   // writes the frame, then release-stores seq = write_index + 1.
@@ -36,6 +43,14 @@ struct alignas(kCacheLine) Header {
   uint64_t slot_size;
   alignas(kCacheLine) std::atomic<uint64_t> write_index;
 };
+
+static_assert(sizeof(std::atomic<uint64_t>) == sizeof(uint64_t));
+static_assert(alignof(std::atomic<uint64_t>) == alignof(uint64_t));
+static_assert(std::atomic<uint64_t>::is_always_lock_free);
+static_assert(offsetof(Header, write_index) == kHeaderWriteIndexOffset);
+static_assert(sizeof(Header) == kHeaderSize);
+static_assert(offsetof(Slot, frame) == kSlotFrameOffset);
+static_assert(sizeof(Slot) == kSlotSize);
 
 inline constexpr uint32_t kMagic = 0x53484d31;  // "SHM1"
 

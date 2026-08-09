@@ -1,0 +1,42 @@
+#!/bin/bash
+set -euo pipefail
+
+if [[ $EUID -ne 0 ]]; then
+    echo "spectral-netns-exec: must be invoked through sudo" >&2
+    exit 1
+fi
+
+namespace="${1:-}"
+case "$namespace" in
+    spectral-tx|spectral-rx) ;;
+    *)
+        echo "spectral-netns-exec: unsupported namespace: $namespace" >&2
+        exit 2
+        ;;
+esac
+shift
+
+if (( $# == 0 )); then
+    echo "spectral-netns-exec: missing command" >&2
+    exit 2
+fi
+
+caller_uid="${SUDO_UID:-}"
+caller_gid="${SUDO_GID:-}"
+if [[ ! "$caller_uid" =~ ^[0-9]+$ || "$caller_uid" == 0 ||
+      ! "$caller_gid" =~ ^[0-9]+$ ]]; then
+    echo "spectral-netns-exec: invalid sudo caller identity" >&2
+    exit 1
+fi
+
+exec /usr/bin/ip netns exec "$namespace" \
+    /usr/bin/setpriv \
+        --reuid="$caller_uid" \
+        --regid="$caller_gid" \
+        --init-groups \
+        --inh-caps=-all \
+        --ambient-caps=-all \
+        --bounding-set=-all \
+        --no-new-privs \
+        --reset-env \
+        -- "$@"
