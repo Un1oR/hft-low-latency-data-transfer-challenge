@@ -5,10 +5,40 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 #include "metrics.h"
 #include "shm_ring.h"
+
+namespace {
+
+enum class PublishGate {
+  kOpen,            // The after-payload hook lets the writer continue.
+  kPauseRequested,  // The next after-payload hook must stop the writer.
+  kWriterPaused,    // The new payload is copied, but its seq is not published.
+};
+
+std::atomic<PublishGate> publish_gate{PublishGate::kOpen};
+
+void pause_after_payload_write() {
+  switch (publish_gate.load(std::memory_order_relaxed)) {
+    case PublishGate::kOpen:
+      return;
+    case PublishGate::kPauseRequested:
+      break;
+    case PublishGate::kWriterPaused:
+      assert(false && "publish hook re-entered while writer is paused");
+      return;
+  }
+  publish_gate.store(PublishGate::kWriterPaused, std::memory_order_release);
+  while (publish_gate.load(std::memory_order_acquire) ==
+         PublishGate::kWriterPaused) {
+    std::this_thread::yield();
+  }
+}
+
+}  // namespace
 
 static void test_metrics_basic() {
   metrics::Accumulator acc;
@@ -112,11 +142,58 @@ static void test_ring_lapping() {
   printf("test_ring_lapping OK\n");
 }
 
+static void test_ring_rejects_overwrite_in_progress() {
+  struct Frame {
+    uint64_t generation;
+    uint8_t payload[56];
+  };
+
+  std::vector<uint8_t> mem(shm::region_size(1));
+  shm::TRing<pause_after_payload_write> prod;
+  prod.attach(mem.data(), 1, /*init=*/true);
+  shm::Ring cons;
+  cons.attach(mem.data(), 1, /*init=*/false);
+
+  Frame first{};
+  first.generation = 1;
+  std::memset(first.payload, 0x11, sizeof(first.payload));
+
+  Frame second{};
+  second.generation = 2;
+  std::memset(second.payload, 0x22, sizeof(second.payload));
+  publish_gate.store(PublishGate::kOpen, std::memory_order_relaxed);
+  std::thread writer([&] {
+    prod.publish(&first, sizeof(first));
+    publish_gate.store(PublishGate::kPauseRequested,
+                       std::memory_order_relaxed);
+    prod.publish(&second, sizeof(second));
+  });
+  while (publish_gate.load(std::memory_order_acquire) !=
+         PublishGate::kWriterPaused) {
+    std::this_thread::yield();
+  }
+
+  Frame out{};
+  uint32_t len = 0;
+  uint64_t resume = 0;
+  const auto status = cons.read(0, &out, &len, &resume);
+  const bool accepted_overwrite =
+      status == shm::Ring::FrameStatus::kOk &&
+      (len != sizeof(first) || std::memcmp(&out, &first, sizeof(first)) != 0);
+
+  publish_gate.store(PublishGate::kOpen, std::memory_order_release);
+  writer.join();
+
+  assert(!accepted_overwrite);
+  printf("test_ring_rejects_overwrite_in_progress OK\n");
+}
+
 int main() {
   test_metrics_basic();
   test_metrics_drops();
   test_ring_roundtrip();
   test_ring_lapping();
+  test_ring_rejects_overwrite_in_progress();
   printf("ALL TESTS PASSED\n");
   return 0;
 }

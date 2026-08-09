@@ -59,9 +59,10 @@ inline size_t region_size(uint32_t slots) {
 }
 
 // A thin view over an already-mapped region; does not own the mapping.
-class Ring {
+template <void (*AfterPayloadWrite)() = nullptr>
+class TRing {
  public:
-  Ring() = default;
+  TRing() = default;
 
   // Producer passes init=true to (re)initialise the header; readers pass false.
   void attach(void* base, uint32_t slots, bool init) {
@@ -87,6 +88,7 @@ class Ring {
     Slot& s = slots_[idx & mask_];
     s.frame_len = len;
     std::memcpy(s.frame, frame, len);
+    if constexpr (AfterPayloadWrite != nullptr) AfterPayloadWrite();
     // Release so the frame writes are visible before the seq flip. seq is idx+1
     // so 0 stays reserved for "never written".
     s.seq.store(idx + 1, std::memory_order_release);
@@ -132,5 +134,7 @@ class Ring {
   Slot* slots_ = nullptr;
   uint64_t mask_ = 0;
 };
+
+using Ring = TRing<>;
 
 }  // namespace shm
