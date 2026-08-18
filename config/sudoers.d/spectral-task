@@ -2,6 +2,7 @@
 # its veth pair, and netem qdiscs attached to that pair.
 
 Cmnd_Alias SPECTRAL_NS_ENTER = /usr/local/libexec/spectral-netns-exec *
+Cmnd_Alias SPECTRAL_CPUFREQ = /usr/local/libexec/spectral-cpufreq *
 
 Cmnd_Alias SPECTRAL_NET_SETUP = \
     /usr/bin/ip netns add spectral-tx, \
@@ -24,4 +25,4 @@ Cmnd_Alias SPECTRAL_NETEM = \
     /usr/bin/ip netns exec spectral-tx /usr/sbin/tc qdisc del dev veth-tx root, \
     /usr/bin/ip netns exec spectral-rx /usr/sbin/tc qdisc del dev veth-rx root
 
-%spectral-bench ALL=(root) NOPASSWD: SPECTRAL_NS_ENTER, SPECTRAL_NET_SETUP, SPECTRAL_NETEM
+%spectral-bench ALL=(root) NOPASSWD: SPECTRAL_NS_ENTER, SPECTRAL_CPUFREQ, SPECTRAL_NET_SETUP, SPECTRAL_NETEM

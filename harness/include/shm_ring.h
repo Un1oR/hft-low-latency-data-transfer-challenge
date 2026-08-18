@@ -33,7 +33,7 @@ inline constexpr size_t kCacheLine = 64;
 // binaries. A layout change bumps kMagic and requires a matching binary set.
 inline constexpr size_t kHeaderWriteIndexOffset = 64;
 inline constexpr size_t kHeaderSize = 128;
-inline constexpr size_t kSlotFrameOffset = 16;
+inline constexpr size_t kSlotFrameOffset = kCacheLine;
 inline constexpr size_t kSlotSize = 640;
 
 struct alignas(kCacheLine) Slot {
@@ -41,7 +41,7 @@ struct alignas(kCacheLine) Slot {
   // writes the frame, then release-stores seq = write_index + 1.
   std::atomic<uint64_t> seq;
   std::atomic<uint32_t> frame_len;
-  alignas(kFrameWordSize) std::atomic<uint64_t> frame[kFrameWordCount];
+  alignas(kCacheLine) std::atomic<uint64_t> frame[kFrameWordCount];
 };
 
 struct alignas(kCacheLine) Header {
@@ -61,7 +61,7 @@ static_assert(sizeof(Header) == kHeaderSize);
 static_assert(offsetof(Slot, frame) == kSlotFrameOffset);
 static_assert(sizeof(Slot) == kSlotSize);
 
-inline constexpr uint32_t kMagic = 0x53484d32;  // "SHM2"
+inline constexpr uint32_t kMagic = 0x53484d33;  // "SHM3"
 
 inline size_t region_size(uint32_t slots) {
   return sizeof(Header) + static_cast<size_t>(slots) * sizeof(Slot);
@@ -126,8 +126,8 @@ class TRing {
     const uint64_t seq = s.seq.load(std::memory_order_acquire);
     const uint64_t want = read_index + 1;
 
-    if (seq < want) return FrameStatus::kEmpty;
-    if (seq > want) {
+    if (__builtin_expect(seq < want, true)) return FrameStatus::kEmpty;
+    if (__builtin_expect(seq > want, false)) {
       const uint64_t edge = live_edge();
       *resume_at = edge > slot_count() ? edge - slot_count() : 0;
       return FrameStatus::kLapped;
@@ -146,32 +146,72 @@ class TRing {
   }
 
  private:
+  template <size_t Index, size_t WordCount>
+  static inline __attribute__((always_inline)) void store_words(
+      Slot& slot, const uint8_t* source) {
+    uint64_t word = 0;
+    __builtin_memcpy(&word, source + Index * kFrameWordSize, kFrameWordSize);
+    slot.frame[Index].store(word, std::memory_order_release);
+    if constexpr (Index + 1 < WordCount) {
+      store_words<Index + 1, WordCount>(slot, source);
+    }
+  }
+
   static void store_frame(Slot& slot, const void* frame, uint32_t len) {
     const auto* source = static_cast<const uint8_t*>(frame);
-    size_t offset = 0;
-    while (offset < len) {
-      const size_t remaining = len - offset;
-      const size_t chunk =
-          remaining < kFrameWordSize ? remaining : kFrameWordSize;
+    const size_t full_words = len / kFrameWordSize;
+    if (full_words == sizeof(msg::Trade) / kFrameWordSize) {
+      store_words<0, sizeof(msg::Trade) / kFrameWordSize>(slot, source);
+    } else if (full_words == sizeof(msg::OrderBook) / kFrameWordSize) {
+      store_words<0, sizeof(msg::OrderBook) / kFrameWordSize>(slot, source);
+    } else {
+      for (size_t index = 0; index < full_words; ++index) {
+        uint64_t word = 0;
+        __builtin_memcpy(&word, source + index * kFrameWordSize,
+                         kFrameWordSize);
+        slot.frame[index].store(word, std::memory_order_release);
+      }
+    }
+    const size_t remainder = len % kFrameWordSize;
+    if (remainder != 0) {
       uint64_t word = 0;
-      std::memcpy(&word, source + offset, chunk);
-      slot.frame[offset / kFrameWordSize].store(word,
-                                                std::memory_order_release);
-      offset += chunk;
+      std::memcpy(&word, source + full_words * kFrameWordSize, remainder);
+      slot.frame[full_words].store(word, std::memory_order_release);
+    }
+  }
+
+  template <size_t Index, size_t WordCount>
+  static inline __attribute__((always_inline)) void load_words(
+      const Slot& slot, uint8_t* destination) {
+    const uint64_t word = slot.frame[Index].load(std::memory_order_acquire);
+    __builtin_memcpy(destination + Index * kFrameWordSize, &word,
+                     kFrameWordSize);
+    if constexpr (Index + 1 < WordCount) {
+      load_words<Index + 1, WordCount>(slot, destination);
     }
   }
 
   static void load_frame(const Slot& slot, void* frame, uint32_t len) {
     auto* destination = static_cast<uint8_t*>(frame);
-    size_t offset = 0;
-    while (offset < len) {
-      const size_t remaining = len - offset;
-      const size_t chunk =
-          remaining < kFrameWordSize ? remaining : kFrameWordSize;
+    const size_t full_words = len / kFrameWordSize;
+    if (full_words == sizeof(msg::Trade) / kFrameWordSize) {
+      load_words<0, sizeof(msg::Trade) / kFrameWordSize>(slot, destination);
+    } else if (full_words == sizeof(msg::OrderBook) / kFrameWordSize) {
+      load_words<0, sizeof(msg::OrderBook) / kFrameWordSize>(slot,
+                                                             destination);
+    } else {
+      for (size_t index = 0; index < full_words; ++index) {
+        const uint64_t word =
+            slot.frame[index].load(std::memory_order_acquire);
+        __builtin_memcpy(destination + index * kFrameWordSize, &word,
+                         kFrameWordSize);
+      }
+    }
+    const size_t remainder = len % kFrameWordSize;
+    if (remainder != 0) {
       const uint64_t word =
-          slot.frame[offset / kFrameWordSize].load(std::memory_order_acquire);
-      std::memcpy(destination + offset, &word, chunk);
-      offset += chunk;
+          slot.frame[full_words].load(std::memory_order_acquire);
+      std::memcpy(destination + full_words * kFrameWordSize, &word, remainder);
     }
   }
 

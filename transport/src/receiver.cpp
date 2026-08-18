@@ -6,8 +6,8 @@ module;
 #include <unistd.h>
 
 #include "message.h"
-#include "shm_ring.h"
 #include "shm_segment.h"
+#include "spsc_ring.h"
 #include "util.h"
 
 module spectral.transport;
@@ -24,6 +24,7 @@ struct ReceiverConfig {
   std::uint16_t port = 9000;
   std::uint64_t count = 0;
   std::uint64_t idle_ms = 2000;
+  bool busy_poll = false;
 };
 
 [[noreturn]] void receiver_usage_error(std::string_view message) {
@@ -78,6 +79,8 @@ auto parse_receiver_args(int argc, char **argv) -> ReceiverConfig {
       config.count = receiver_parse_u64(next(), "--count");
     } else if (arg == "--idle-ms") {
       config.idle_ms = receiver_parse_u64(next(), "--idle-ms");
+    } else if (arg == "--busy-poll") {
+      config.busy_poll = true;
     } else {
       std::println(stderr, "receiver: unknown option: {}", arg);
       std::exit(2);
@@ -91,7 +94,8 @@ auto parse_receiver_args(int argc, char **argv) -> ReceiverConfig {
 }
 
 auto valid_frame(const std::uint8_t *frame, std::size_t frame_len) -> bool {
-  if (frame_len < sizeof(msg::Header) || frame_len > shm::kFrameCap) {
+  if (frame_len < sizeof(msg::Header) ||
+      frame_len > shm::spsc::kFrameCap) {
     return false;
   }
   const auto *header = reinterpret_cast<const msg::Header *>(frame);
@@ -113,7 +117,9 @@ auto receiver_main(int argc, char **argv) -> int {
     return 2;
   }
 
-  const int socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
+  const int socket_type =
+      SOCK_DGRAM | (config.busy_poll ? SOCK_NONBLOCK : 0);
+  const int socket_fd = socket(AF_INET, socket_type, 0);
   if (socket_fd < 0) {
     std::println(stderr, "receiver: socket failed: {}", std::strerror(errno));
     return 1;
@@ -128,19 +134,21 @@ auto receiver_main(int argc, char **argv) -> int {
     return 1;
   }
 
-  timeval receive_timeout{};
-  const auto timeout_ms = config.idle_ms == 0
-                              ? std::uint64_t{100}
-                              : std::min(config.idle_ms, std::uint64_t{100});
-  receive_timeout.tv_sec = static_cast<time_t>(timeout_ms / 1000);
-  receive_timeout.tv_usec =
-      static_cast<suseconds_t>((timeout_ms % 1000) * 1000);
-  if (setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &receive_timeout,
-                 sizeof(receive_timeout)) != 0) {
-    std::println(stderr, "receiver: SO_RCVTIMEO failed: {}",
-                 std::strerror(errno));
-    close(socket_fd);
-    return 1;
+  if (!config.busy_poll) {
+    timeval receive_timeout{};
+    const auto timeout_ms = config.idle_ms == 0
+                                ? std::uint64_t{100}
+                                : std::min(config.idle_ms, std::uint64_t{100});
+    receive_timeout.tv_sec = static_cast<time_t>(timeout_ms / 1000);
+    receive_timeout.tv_usec =
+        static_cast<suseconds_t>((timeout_ms % 1000) * 1000);
+    if (setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &receive_timeout,
+                   sizeof(receive_timeout)) != 0) {
+      std::println(stderr, "receiver: SO_RCVTIMEO failed: {}",
+                   std::strerror(errno));
+      close(socket_fd);
+      return 1;
+    }
   }
 
   if (bind(socket_fd, reinterpret_cast<const sockaddr *>(&bind_address),
@@ -152,23 +160,27 @@ auto receiver_main(int argc, char **argv) -> int {
   }
 
   auto segment = shm::Segment::open(
-      config.shm_name, shm::region_size(config.slots), /*create=*/true);
-  shm::Ring ring;
+      config.shm_name, shm::spsc::sequence_region_size(config.slots),
+      /*create=*/true);
+  shm::spsc::SequenceRing ring;
   ring.attach(segment.base(), config.slots, /*init=*/true);
 
   std::uint64_t received = 0;
   std::uint64_t invalid = 0;
+  std::uint64_t queue_dropped = 0;
   auto last_progress = util::now_ns();
   const auto idle_ns = config.idle_ms * 1000000ull;
-  alignas(64) std::uint8_t frame[shm::kFrameCap];
+  alignas(64) std::uint8_t frame[shm::spsc::kFrameCap];
 
-  std::println(stderr, "receiver: bind={}:{} shm={} slots={} count={}",
+  std::println(stderr,
+               "receiver: bind={}:{} shm={} slots={} count={} busy_poll={}",
                config.bind_address, config.port, config.shm_name, config.slots,
-               config.count);
+               config.count, config.busy_poll);
 
   while (config.count == 0 || received < config.count) {
     const auto datagram_len =
-        recvfrom(socket_fd, frame, sizeof(frame), MSG_TRUNC, nullptr, nullptr);
+        recvfrom(socket_fd, frame, shm::spsc::kFrameCap, MSG_TRUNC, nullptr,
+                 nullptr);
     if (datagram_len < 0) {
       if (errno == EINTR)
         continue;
@@ -191,13 +203,18 @@ auto receiver_main(int argc, char **argv) -> int {
       continue;
     }
 
-    ring.publish(frame, static_cast<std::uint32_t>(datagram_len));
+    if (!ring.publish(frame, static_cast<std::uint32_t>(datagram_len))) {
+      ++queue_dropped;
+      continue;
+    }
     ++received;
   }
 
   close(socket_fd);
   segment.unlink();
-  std::println(stderr, "receiver: received={} invalid={}", received, invalid);
+  std::println(stderr,
+               "receiver: received={} invalid={} queue_dropped={}", received,
+               invalid, queue_dropped);
   return 0;
 }
 

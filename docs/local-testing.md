@@ -250,7 +250,21 @@ sudo -n /usr/local/libexec/spectral-netns-exec spectral-tx /usr/bin/id
 make net-status
 ```
 
-### 2.3. Python-окружение и notebook
+### 2.3. Разрешения для `perf`
+
+Для профилирования собственных userspace-процессов без root выполняется:
+
+```bash
+make setup-perf
+```
+
+Цель устанавливает `/etc/sysctl.d/60-spectral-perf.conf` со значением
+`kernel.perf_event_paranoid=2`, применяет его и запускает `make perf-check`.
+Проверка собирает hardware/software counters и короткий userspace sample в
+`build/perf-check/`. Команда настройки один раз запросит пароль администратора;
+последующие запуски `make perf-check` работают без `sudo`.
+
+### 2.4. Python-окружение и notebook
 
 Зависимости `analysis.ipynb` описаны в корневом `pyproject.toml` и точно
 зафиксированы в `uv.lock`. Проект использует Python 3.14 из `.python-version`.
@@ -357,6 +371,11 @@ producer -> TX SHM -> sender [spectral-tx] -> veth/netem -> receiver [spectral-r
 ```bash
 make run-direct-test
 ```
+
+Контракт очереди, сравнивавшиеся реализации и правила интерпретации локальных
+percentiles описаны в [`docs/direct-ring.md`](direct-ring.md). В частности,
+локальный P99.99 на мобильном CPU считается диагностикой thermal/interrupt
+noise; финальный far-tail gate переносится на целевые AWS-инстансы.
 
 По умолчанию producer и consumer закреплены за CPU `4` и `7` соответственно;
 `DIRECT_PINNED=0` оставляет их планировщику. Producer работает только во время

@@ -11,12 +11,18 @@ CMAKE_CACHE := $(CURDIR)/build/$(CMAKE_PRESET)/CMakeCache.txt
 BENCH_GROUP := spectral-bench
 NETNS_EXEC_SOURCE := $(CURDIR)/tools/spectral-netns-exec
 NETNS_EXEC := /usr/local/libexec/spectral-netns-exec
+CPUFREQ_SOURCE := $(CURDIR)/tools/spectral-cpufreq
+CPUFREQ := /usr/local/libexec/spectral-cpufreq
 SUDOERS_SOURCE := $(CURDIR)/config/sudoers.d/spectral-task
 SUDOERS_DEST := /etc/sudoers.d/spectral-task
 SUDO := sudo -n
 IP := /usr/bin/ip
 TC := /usr/sbin/tc
 TASKSET := /usr/bin/taskset
+PERF := /usr/bin/perf
+PERF_SYSCTL_SOURCE := $(CURDIR)/config/sysctl.d/60-spectral-perf.conf
+PERF_SYSCTL_DEST := /etc/sysctl.d/60-spectral-perf.conf
+CPUFREQ_STATE := $(CURDIR)/build/cpufreq-state
 
 TX_NAMESPACE := spectral-tx
 RX_NAMESPACE := spectral-rx
@@ -40,9 +46,28 @@ MESSAGE_RATE ?= 100000
 MESSAGE_TYPE ?= mixed
 UDP_PORT ?= 9000
 IDLE_MS ?= 2000
+RECEIVER_BUSY_POLL ?= 1
 LATENCY_CSV ?=
 DIRECT_SHM ?= /spectral_direct
 DIRECT_PINNED ?= 1
+DIRECT_RING ?= sequence
+DIRECT_PERF_ROLE ?= none
+DIRECT_PERF_OUTPUT ?=
+DIRECT_PRODUCER_PERF_OUTPUT ?= $(CURDIR)/build/perf-direct/producer-stat.txt
+DIRECT_CONSUMER_PERF_OUTPUT ?= $(CURDIR)/build/perf-direct/consumer-stat.txt
+NETWORK_PERF_ROLE ?= none
+NETWORK_PERF_OUTPUT ?=
+PERF_STAT_EVENTS ?= task-clock:u,cycles:u,instructions:u,branches:u,branch-misses:u,cache-references:u,cache-misses:u,L1-dcache-loads:u,L1-dcache-load-misses:u,dTLB-loads:u,dTLB-load-misses:u,context-switches,cpu-migrations,page-faults
+PERF_RECORD_FREQUENCY ?= 997
+BENCH_CPUS ?= $(PRODUCER_CPU) $(SENDER_CPU) $(RECEIVER_CPU) $(CONSUMER_CPU)
+CPU_MAX_FREQ_KHZ ?= 2300000
+RING_BENCH_SLOTS ?= 1024
+RING_BENCH_ROUNDS ?= 2000
+METRICS_BENCH_COUNT ?= 2000000
+RING_HANDOFF_IMPL ?= snapshot
+RING_HANDOFF_FRAME ?= trade
+RING_HANDOFF_CLOCK ?= realtime
+RING_HANDOFF_PERF_OUTPUT ?= $(CURDIR)/build/perf-ring-handoff/stat.txt
 
 NETEM_DELAY ?= 0us
 NETEM_JITTER ?= 0us
@@ -52,7 +77,7 @@ NETEM_LIMIT ?= 100000
 define producer_command
 $(TASKSET) -c "$(PRODUCER_CPU)" "$(HARNESS_BIN)/producer" \
 	--shm "$(1)" --slots "$(2)" \
-	--count "$(3)" --rate "$(4)" --type "$(5)"
+	--count "$(3)" --rate "$(4)" --type "$(5)" --wait-for-reader
 endef
 
 define sender_command
@@ -66,7 +91,8 @@ define receiver_command
 $(1) $(TASKSET) -c "$(RECEIVER_CPU)" "$(TRANSPORT_BIN)/receiver" \
 	--shm "$(2)" --slots "$(3)" \
 	--bind "$(4)" --port "$(5)" \
-	--count "$(6)" --idle-ms "$(7)"
+	--count "$(6)" --idle-ms "$(7)" \
+	$(if $(filter 1,$(RECEIVER_BUSY_POLL)),--busy-poll)
 endef
 
 define consumer_command
@@ -77,7 +103,13 @@ $(TASKSET) -c "$(CONSUMER_CPU)" "$(HARNESS_BIN)/consumer" \
 endef
 
 .PHONY: \
-	all configure transport-build harness-build build test clean help setup-sudo \
+	all configure transport-build harness-build build test test-tsan clean help \
+	setup-sudo setup-perf perf-check \
+	cpu-frequency-status cpu-frequency-set cpu-frequency-restore \
+	perf-stat-direct-producer perf-stat-direct-consumer perf-record-direct \
+	perf-record-network \
+	hot-path-benchmark ring-handoff-benchmark perf-stat-ring-handoff \
+	diagnose-direct-noise \
 	net-up net-status netem-set netem-clear net-down \
 	run-test run-direct-test \
 	run-producer run-sender run-receiver run-consumer \
@@ -105,6 +137,9 @@ test: build
 		MESSAGE_COUNT=5000 MESSAGE_RATE=5000 IDLE_MS=500
 	grep -q 'dropped      : 0' "$(CURDIR)/build/run-test/consumer.log"
 
+test-tsan:
+	@$(MAKE) --no-print-directory -C "$(HARNESS_DIR)" test-tsan
+
 setup-sudo:
 	@set -euo pipefail
 	setup_user=$$(id -un)
@@ -113,6 +148,7 @@ setup-sudo:
 		exit 2
 	fi
 	/bin/bash -n "$(NETNS_EXEC_SOURCE)"
+	/bin/bash -n "$(CPUFREQ_SOURCE)"
 	/usr/sbin/visudo -cf "$(SUDOERS_SOURCE)"
 	sudo -v
 	sudo /usr/sbin/groupadd --force "$(BENCH_GROUP)"
@@ -120,6 +156,8 @@ setup-sudo:
 	sudo /usr/bin/install -d -o root -g root -m 0755 "/usr/local/libexec"
 	sudo /usr/bin/install -o root -g root -m 0755 \
 		"$(NETNS_EXEC_SOURCE)" "$(NETNS_EXEC)"
+	sudo /usr/bin/install -o root -g root -m 0755 \
+		"$(CPUFREQ_SOURCE)" "$(CPUFREQ)"
 	sudo /usr/bin/install -o root -g root -m 0440 \
 		"$(SUDOERS_SOURCE)" "$(SUDOERS_DEST)"
 	sudo /usr/sbin/visudo -cf "$(SUDOERS_DEST)"
@@ -127,6 +165,176 @@ setup-sudo:
 	if ! id -nG | tr ' ' '\n' | grep -Fxq "$(BENCH_GROUP)"; then
 		echo "setup-sudo: log out and back in before running network targets"
 	fi
+
+cpu-frequency-status:
+	@set -euo pipefail
+	$(SUDO) $(CPUFREQ) get $(BENCH_CPUS)
+
+cpu-frequency-set:
+	@set -euo pipefail
+	if [[ -e "$(CPUFREQ_STATE)" ]]; then
+		echo "cpu-frequency-set: active state exists; run 'make cpu-frequency-restore'" >&2
+		exit 1
+	fi
+	mkdir -p "$(dir $(CPUFREQ_STATE))"
+	state_tmp=$$(mktemp "$(CPUFREQ_STATE).XXXXXX")
+	trap 'rm -f -- "$$state_tmp"' EXIT
+	$(SUDO) $(CPUFREQ) get $(BENCH_CPUS) >"$$state_tmp"
+	mv -- "$$state_tmp" "$(CPUFREQ_STATE)"
+	$(SUDO) $(CPUFREQ) set "$(CPU_MAX_FREQ_KHZ)" $(BENCH_CPUS)
+	echo "cpu-frequency-set: max=$(CPU_MAX_FREQ_KHZ) kHz on CPUs $(BENCH_CPUS)"
+
+cpu-frequency-restore:
+	@set -euo pipefail
+	if [[ ! -f "$(CPUFREQ_STATE)" ]]; then
+		echo "cpu-frequency-restore: no saved state" >&2
+		exit 1
+	fi
+	while read -r cpu max_khz; do
+		$(SUDO) $(CPUFREQ) set "$$max_khz" "$$cpu"
+	done <"$(CPUFREQ_STATE)"
+	rm -f -- "$(CPUFREQ_STATE)"
+	echo "cpu-frequency-restore: previous limits restored"
+
+setup-perf:
+	@set -euo pipefail
+	if [[ $$(id -u) == 0 ]]; then
+		echo "setup-perf: run make as the user who will execute tests" >&2
+		exit 2
+	fi
+	grep -Fxq 'kernel.perf_event_paranoid = 2' "$(PERF_SYSCTL_SOURCE)"
+	sudo -v
+	sudo /usr/bin/install -d -o root -g root -m 0755 /etc/sysctl.d
+	sudo /usr/bin/install -o root -g root -m 0644 \
+		"$(PERF_SYSCTL_SOURCE)" "$(PERF_SYSCTL_DEST)"
+	sudo /usr/sbin/sysctl --load "$(PERF_SYSCTL_DEST)"
+	$(MAKE) --no-print-directory perf-check
+
+perf-check:
+	@set -euo pipefail
+	output_dir="$(CURDIR)/build/perf-check"
+	mkdir -p "$$output_dir"
+	$(PERF) stat -o "$$output_dir/stat.txt" \
+		-e task-clock,cycles,instructions,context-switches,cpu-migrations \
+		-- /bin/true
+	$(PERF) record -q -o "$$output_dir/perf.data" -F 99 -e cycles:u -- \
+		/bin/bash -c '/usr/bin/head -c 64M /dev/zero | \
+		/usr/bin/sha256sum >/dev/null'
+	first_sample=$$($(PERF) script -i "$$output_dir/perf.data" | sed -n '1p')
+	[[ -n "$$first_sample" ]]
+	$(PERF) report --stdio --header-only -i "$$output_dir/perf.data" \
+		>"$$output_dir/report.txt"
+	echo "perf-check: stat and userspace sampling are available"
+	echo "perf-check: artifacts saved in $$output_dir"
+
+perf-stat-direct-producer:
+	@mkdir -p "$(CURDIR)/build/perf-direct"
+	$(MAKE) --no-print-directory run-direct-test \
+		DIRECT_PERF_ROLE=producer \
+		DIRECT_PERF_OUTPUT="$(DIRECT_PRODUCER_PERF_OUTPUT)"
+
+perf-stat-direct-consumer:
+	@mkdir -p "$(CURDIR)/build/perf-direct"
+	$(MAKE) --no-print-directory run-direct-test \
+		DIRECT_PERF_ROLE=consumer \
+		DIRECT_PERF_OUTPUT="$(DIRECT_CONSUMER_PERF_OUTPUT)"
+
+perf-record-direct:
+	@set -euo pipefail
+	output_dir="$(CURDIR)/build/perf-direct"
+	mkdir -p "$$output_dir"
+	$(PERF) record -q -o "$$output_dir/perf.data" \
+		-F "$(PERF_RECORD_FREQUENCY)" -e cycles:u -- \
+		$(MAKE) --no-print-directory run-direct-test
+	$(PERF) report --stdio --no-children --sort comm,dso,symbol \
+		-i "$$output_dir/perf.data" >"$$output_dir/report.txt"
+	echo "perf-record-direct: report saved in $$output_dir/report.txt"
+
+perf-record-network:
+	@set -euo pipefail
+	output_dir="$(CURDIR)/build/perf-network"
+	mkdir -p "$$output_dir"
+	for role in sender receiver; do
+		$(MAKE) --no-print-directory run-test \
+			NETWORK_PERF_ROLE="$$role" \
+			NETWORK_PERF_OUTPUT="$$output_dir/$$role.data"
+		$(PERF) report --stdio --no-children --sort comm,dso,symbol \
+			-i "$$output_dir/$$role.data" >"$$output_dir/$$role-report.txt"
+	done
+	echo "perf-record-network: reports saved in $$output_dir"
+
+hot-path-benchmark:
+	@set -euo pipefail
+	$(MAKE) --no-print-directory -C "$(HARNESS_DIR)" \
+		bin/ring_benchmark bin/metrics_benchmark
+	$(TASKSET) -c "$(PRODUCER_CPU)" "$(HARNESS_BIN)/ring_benchmark" \
+		--slots "$(RING_BENCH_SLOTS)" --rounds "$(RING_BENCH_ROUNDS)"
+	$(TASKSET) -c "$(CONSUMER_CPU)" "$(HARNESS_BIN)/metrics_benchmark" \
+		--count "$(METRICS_BENCH_COUNT)"
+
+ring-handoff-benchmark:
+	@set -euo pipefail
+	$(MAKE) --no-print-directory -C "$(HARNESS_DIR)" \
+		bin/ring_handoff_benchmark
+	"$(HARNESS_BIN)/ring_handoff_benchmark" \
+		--impl "$(RING_HANDOFF_IMPL)" --frame "$(RING_HANDOFF_FRAME)" \
+		--clock "$(RING_HANDOFF_CLOCK)" \
+		--slots "$(SHM_SLOTS)" --count "$(MESSAGE_COUNT)" \
+		--rate "$(MESSAGE_RATE)" --producer-cpu "$(PRODUCER_CPU)" \
+		--consumer-cpu "$(CONSUMER_CPU)"
+
+perf-stat-ring-handoff:
+	@set -euo pipefail
+	$(MAKE) --no-print-directory -C "$(HARNESS_DIR)" \
+		bin/ring_handoff_benchmark
+	mkdir -p "$$(dirname -- "$(RING_HANDOFF_PERF_OUTPUT)")"
+	$(PERF) stat -o "$(RING_HANDOFF_PERF_OUTPUT)" \
+		-e "$(PERF_STAT_EVENTS)" -- \
+		"$(HARNESS_BIN)/ring_handoff_benchmark" \
+		--impl "$(RING_HANDOFF_IMPL)" --frame "$(RING_HANDOFF_FRAME)" \
+		--clock "$(RING_HANDOFF_CLOCK)" \
+		--slots "$(SHM_SLOTS)" --count "$(MESSAGE_COUNT)" \
+		--rate "$(MESSAGE_RATE)" --producer-cpu "$(PRODUCER_CPU)" \
+		--consumer-cpu "$(CONSUMER_CPU)"
+	echo "perf-stat-ring-handoff: counters saved in $(RING_HANDOFF_PERF_OUTPUT)"
+
+diagnose-direct-noise:
+	@set -euo pipefail
+	output_dir="$(CURDIR)/build/direct-noise"
+	mkdir -p "$$output_dir"
+	rm -f -- "$$output_dir/interrupts-before.txt" \
+		"$$output_dir/interrupts-after.txt" "$$output_dir/delta.txt"
+	cp /proc/interrupts "$$output_dir/interrupts-before.txt"
+	$(MAKE) --no-print-directory run-direct-test
+	cp /proc/interrupts "$$output_dir/interrupts-after.txt"
+	awk -v cpus="$(BENCH_CPUS)" '
+		NR == FNR {
+			if ($$1 ~ /:$$/) {
+				for (cpu = 0; cpu < 256 && cpu + 2 <= NF; ++cpu) {
+					if ($$(cpu + 2) !~ /^[0-9]+$$/) break
+					before[$$1, cpu] = $$(cpu + 2)
+				}
+			}
+			next
+		}
+		$$1 ~ /:$$/ {
+			count = split(cpus, selected, " ")
+			total = 0
+			for (item = 1; item <= count; ++item) {
+				cpu = selected[item]
+				delta[item] = $$(cpu + 2) - before[$$1, cpu]
+				total += delta[item]
+			}
+			if (total != 0) {
+				printf "%-8s", $$1
+				for (item = 1; item <= count; ++item) {
+					printf " CPU%s=%d", selected[item], delta[item]
+				}
+				printf "\n"
+			}
+		}' "$$output_dir/interrupts-before.txt" \
+		   "$$output_dir/interrupts-after.txt" | tee "$$output_dir/delta.txt"
+	echo "diagnose-direct-noise: interrupt deltas saved in $$output_dir/delta.txt"
 
 clean:
 	@$(MAKE) --no-print-directory -C "$(HARNESS_DIR)" clean
@@ -347,6 +555,29 @@ run-direct-test:
 		echo "run-direct-test: DIRECT_PINNED must be 0 or 1" >&2
 		exit 2
 	fi
+	direct_ring="$(DIRECT_RING)"
+	case "$$direct_ring" in
+		sequence|cursor|split-sequence|dense-sequence) ;;
+		*)
+			echo "run-direct-test: DIRECT_RING must be sequence, cursor, split-sequence or dense-sequence" >&2
+			exit 2
+			;;
+	esac
+	perf_role="$(DIRECT_PERF_ROLE)"
+	perf_output="$(DIRECT_PERF_OUTPUT)"
+	if [[ "$$perf_role" != none && "$$perf_role" != producer && \
+	      "$$perf_role" != consumer ]]; then
+		echo "run-direct-test: DIRECT_PERF_ROLE must be none, producer or consumer" >&2
+		exit 2
+	fi
+	if [[ "$$perf_role" != none && -z "$$perf_output" ]]; then
+		echo "run-direct-test: DIRECT_PERF_OUTPUT is required for profiling" >&2
+		exit 2
+	fi
+	if [[ -n "$$perf_output" ]]; then
+		mkdir -p "$$(dirname -- "$$perf_output")"
+		rm -f -- "$$perf_output"
+	fi
 	shm_name="$(DIRECT_SHM)"
 	name_re='^/[A-Za-z0-9_.-]+$$'
 	if [[ ! "$$shm_name" =~ $$name_re ]]; then
@@ -360,7 +591,7 @@ run-direct-test:
 		rm -f -- "$$latency_csv"
 	fi
 	consumer_args=(--shm "$$shm_name" --slots "$(SHM_SLOTS)" --from-edge \
-		--count "$(MESSAGE_COUNT)" --idle-ms "$(IDLE_MS)")
+		--count "$(MESSAGE_COUNT)" --idle-ms "$(IDLE_MS)" --ring "$$direct_ring")
 	if [[ -n "$$latency_csv" ]]; then
 		consumer_args+=(--csv "$$latency_csv")
 	fi
@@ -373,7 +604,12 @@ run-direct-test:
 		producer_prefix=($(TASKSET) -c "$(PRODUCER_CPU)")
 		consumer_prefix=($(TASKSET) -c "$(CONSUMER_CPU)")
 	fi
+	if [[ "$$perf_role" == consumer ]]; then
+		consumer_prefix=("$(PERF)" stat -o "$$perf_output" \
+			-e "$(PERF_STAT_EVENTS)" -- "$${consumer_prefix[@]}")
+	fi
 	producer_pid=""
+	perf_pid=""
 	cleanup() {
 		if [[ -n "$$producer_pid" ]] && kill -0 "$$producer_pid" 2>/dev/null; then
 			kill "$$producer_pid" 2>/dev/null || true
@@ -381,12 +617,15 @@ run-direct-test:
 		if [[ -n "$$producer_pid" ]]; then
 			wait "$$producer_pid" 2>/dev/null || true
 		fi
+		if [[ -n "$$perf_pid" ]]; then
+			wait "$$perf_pid" 2>/dev/null || true
+		fi
 		rm -f -- "$$shm_file"
 	}
 	trap cleanup EXIT INT TERM
 	"$${producer_prefix[@]}" "$(HARNESS_BIN)/producer" \
 		--shm "$$shm_name" --slots "$(SHM_SLOTS)" --count 0 \
-		--rate "$(MESSAGE_RATE)" --type "$(MESSAGE_TYPE)" \
+		--rate "$(MESSAGE_RATE)" --type "$(MESSAGE_TYPE)" --ring "$$direct_ring" \
 		>"$$log_dir/producer.log" 2>&1 &
 	producer_pid=$$!
 	for _ in $$(seq 1 200); do
@@ -398,6 +637,20 @@ run-direct-test:
 		sed -n '1,200p' "$$log_dir/producer.log" >&2
 		exit 1
 	fi
+	if [[ "$$perf_role" == producer ]]; then
+		"$(PERF)" stat -o "$$perf_output" -e "$(PERF_STAT_EVENTS)" \
+			-p "$$producer_pid" >"$$log_dir/perf.log" 2>&1 &
+		perf_pid=$$!
+		for _ in $$(seq 1 200); do
+			if [[ -s "$$perf_output" ]]; then break; fi
+			if ! kill -0 "$$perf_pid" 2>/dev/null; then break; fi
+			sleep 0.001
+		done
+		if ! kill -0 "$$perf_pid" 2>/dev/null; then
+			sed -n '1,200p' "$$log_dir/perf.log" >&2
+			exit 1
+		fi
+	fi
 	set +e
 	"$${consumer_prefix[@]}" "$(HARNESS_BIN)/consumer" \
 		"$${consumer_args[@]}" \
@@ -406,6 +659,7 @@ run-direct-test:
 	set -e
 	cleanup
 	producer_pid=""
+	perf_pid=""
 	trap - EXIT INT TERM
 	if (( consumer_status != 0 )); then
 		for log in producer consumer; do
@@ -445,12 +699,34 @@ run-test:
 	port="$(UDP_PORT)"
 	idle_ms="$(IDLE_MS)"
 	latency_csv="$(LATENCY_CSV)"
+	perf_role="$(NETWORK_PERF_ROLE)"
+	perf_output="$(NETWORK_PERF_OUTPUT)"
+	if [[ "$$perf_role" != none && "$$perf_role" != sender && \
+	      "$$perf_role" != receiver ]]; then
+		echo "run-test: NETWORK_PERF_ROLE must be none, sender or receiver" >&2
+		exit 2
+	fi
+	if [[ "$$perf_role" != none && -z "$$perf_output" ]]; then
+		echo "run-test: NETWORK_PERF_OUTPUT is required for profiling" >&2
+		exit 2
+	fi
+	if [[ -n "$$perf_output" ]]; then
+		mkdir -p "$$(dirname -- "$$perf_output")"
+		rm -f -- "$$perf_output"
+	fi
 	if [[ -n "$$latency_csv" ]]; then
 		mkdir -p "$$(dirname -- "$$latency_csv")"
 		rm -f -- "$$latency_csv"
 	fi
 	sender_exec=($(SUDO) $(NETNS_EXEC) "$(TX_NAMESPACE)")
 	receiver_exec=($(SUDO) $(NETNS_EXEC) "$(RX_NAMESPACE)")
+	if [[ "$$perf_role" == sender ]]; then
+		sender_exec+=("$(PERF)" record -q -o "$$perf_output" \
+			-F "$(PERF_RECORD_FREQUENCY)" -e cycles:u --)
+	elif [[ "$$perf_role" == receiver ]]; then
+		receiver_exec+=("$(PERF)" record -q -o "$$perf_output" \
+			-F "$(PERF_RECORD_FREQUENCY)" -e cycles:u --)
+	fi
 	for spec in \
 		"$(TX_NAMESPACE) $(TX_INTERFACE)" \
 		"$(RX_NAMESPACE) $(RX_INTERFACE)"; do
@@ -614,9 +890,15 @@ help:
 	@echo "Build and verification:"
 	echo "  make build                  build legacy harness and C++23 transport"
 	echo "  make test                   build and run unit and clean-veth tests"
+	echo "  make test-tsan              direct ring unit/handoff tests under TSAN"
 	echo
 	echo "Machine setup:"
 	echo "  make setup-sudo             install scoped passwordless network access"
+	echo "  make setup-perf             enable unprivileged userspace profiling"
+	echo "  make perf-check             verify perf counters and sampling"
+	echo "  make perf-stat-direct-producer"
+	echo "  make perf-stat-direct-consumer"
+	echo "  make perf-record-direct     sample both direct-path processes"
 	echo
 	echo "Virtual network:"
 	echo "  make net-up                 create clean namespace/veth link"
@@ -627,6 +909,7 @@ help:
 	echo
 	echo "End-to-end tests (run 'make build' after code changes):"
 	echo "  make run-direct-test        direct producer-to-consumer SHM path"
+	echo "    DIRECT_RING=sequence|cursor|split-sequence|dense-sequence"
 	echo "  make run-test               use the active veth/netem configuration"
 	echo
 	echo "Individual processes (one foreground command per terminal):"

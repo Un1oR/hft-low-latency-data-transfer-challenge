@@ -1,0 +1,84 @@
+#!/bin/bash
+set -euo pipefail
+
+if [[ $EUID -ne 0 ]]; then
+    echo "spectral-cpufreq: must be invoked through sudo" >&2
+    exit 1
+fi
+
+usage() {
+    echo "usage: spectral-cpufreq get CPU..." >&2
+    echo "       spectral-cpufreq set MAX_KHZ CPU..." >&2
+    exit 2
+}
+
+is_isolated_cpu() {
+    local wanted=$1
+    local entry first last cpu
+    IFS=',' read -ra entries </sys/devices/system/cpu/isolated
+    for entry in "${entries[@]}"; do
+        if [[ "$entry" == *-* ]]; then
+            first=${entry%-*}
+            last=${entry#*-}
+            for ((cpu = first; cpu <= last; ++cpu)); do
+                [[ "$cpu" == "$wanted" ]] && return 0
+            done
+        elif [[ "$entry" == "$wanted" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+validate_cpu() {
+    local cpu=$1
+    if [[ ! "$cpu" =~ ^[0-9]+$ ]] || ! is_isolated_cpu "$cpu"; then
+        echo "spectral-cpufreq: CPU $cpu is not kernel-isolated" >&2
+        exit 2
+    fi
+    local policy="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+    if [[ ! -r "$policy/cpuinfo_min_freq" ||
+          ! -r "$policy/cpuinfo_max_freq" ||
+          ! -w "$policy/scaling_max_freq" ]]; then
+        echo "spectral-cpufreq: CPU $cpu has no writable CPUFreq policy" >&2
+        exit 1
+    fi
+}
+
+operation=${1:-}
+case "$operation" in
+    get)
+        shift
+        (( $# > 0 )) || usage
+        for cpu in "$@"; do
+            validate_cpu "$cpu"
+        done
+        for cpu in "$@"; do
+            policy="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+            printf '%s %s\n' "$cpu" "$(<"$policy/scaling_max_freq")"
+        done
+        ;;
+    set)
+        max_khz=${2:-}
+        [[ "$max_khz" =~ ^[1-9][0-9]*$ ]] || usage
+        shift 2
+        (( $# > 0 )) || usage
+        for cpu in "$@"; do
+            validate_cpu "$cpu"
+            policy="/sys/devices/system/cpu/cpu${cpu}/cpufreq"
+            min_khz=$(<"$policy/cpuinfo_min_freq")
+            max_supported_khz=$(<"$policy/cpuinfo_max_freq")
+            if (( max_khz < min_khz || max_khz > max_supported_khz )); then
+                echo "spectral-cpufreq: $max_khz kHz is outside CPU $cpu range $min_khz..$max_supported_khz" >&2
+                exit 2
+            fi
+        done
+        for cpu in "$@"; do
+            printf '%s\n' "$max_khz" \
+                >"/sys/devices/system/cpu/cpu${cpu}/cpufreq/scaling_max_freq"
+        done
+        ;;
+    *)
+        usage
+        ;;
+esac

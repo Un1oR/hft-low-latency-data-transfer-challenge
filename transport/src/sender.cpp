@@ -5,8 +5,8 @@ module;
 #include <unistd.h>
 
 #include "message.h"
-#include "shm_ring.h"
 #include "shm_segment.h"
+#include "spsc_ring.h"
 #include "util.h"
 
 module spectral.transport;
@@ -114,20 +114,22 @@ auto sender_main(int argc, char **argv) -> int {
   }
 
   auto segment = shm::Segment::open(
-      config.shm_name, shm::region_size(config.slots), /*create=*/false);
-  const auto *shared_header = static_cast<const shm::Header *>(segment.base());
-  if (shared_header->magic != shm::kMagic ||
+      config.shm_name, shm::spsc::sequence_region_size(config.slots),
+      /*create=*/false);
+  const auto *shared_header =
+      static_cast<const shm::spsc::Header *>(segment.base());
+  if (shared_header->magic != shm::spsc::kMagic ||
       shared_header->slot_count != config.slots ||
-      shared_header->slot_size != sizeof(shm::Slot)) {
+      shared_header->slot_size != sizeof(shm::spsc::SequenceSlot)) {
     std::println(stderr,
                  "sender: incompatible shared-memory layout: magic={:#x} "
                  "slots={} slot_size={} expected_slot_size={}",
                  shared_header->magic, shared_header->slot_count,
-                 shared_header->slot_size, sizeof(shm::Slot));
+                 shared_header->slot_size, sizeof(shm::spsc::SequenceSlot));
     close(socket_fd);
     return 1;
   }
-  shm::Ring ring;
+  shm::spsc::SequenceRing ring;
   ring.attach(segment.base(), config.slots, /*init=*/false);
 
   auto read_index = config.from_edge ? ring.live_edge() : 0;
@@ -137,20 +139,20 @@ auto sender_main(int argc, char **argv) -> int {
   std::uint64_t lapped_events = 0;
   auto last_progress = util::now_ns();
   const auto idle_ns = config.idle_ms * 1000000ull;
-
-  alignas(64) std::uint8_t frame[shm::kFrameCap];
+  alignas(64) std::uint8_t frame[shm::spsc::kFrameCap];
 
   std::println(stderr,
                "sender: shm={} slots={} dest={}:{} count={} from_edge={}",
                config.shm_name, config.slots, config.destination, config.port,
                config.count, config.from_edge ? "yes" : "no");
+  ring.activate_reader();
 
   while (config.count == 0 || processed < config.count) {
     std::uint32_t frame_len = 0;
     std::uint64_t resume_at = 0;
     const auto status = ring.read(read_index, frame, &frame_len, &resume_at);
 
-    if (status == shm::Ring::FrameStatus::kOk) {
+    if (status == shm::spsc::SequenceRing::FrameStatus::kOk) {
       ssize_t sent = -1;
       do {
         sent = sendto(socket_fd, frame, frame_len, 0,
@@ -171,10 +173,11 @@ auto sender_main(int argc, char **argv) -> int {
         }
       }
 
+      ring.commit(read_index);
       ++processed;
       ++read_index;
       last_progress = util::now_ns();
-    } else if (status == shm::Ring::FrameStatus::kLapped) {
+    } else if (status == shm::spsc::SequenceRing::FrameStatus::kLapped) {
       ++lapped_events;
       read_index = resume_at;
       last_progress = util::now_ns();

@@ -30,7 +30,13 @@ struct Observation {
 class Accumulator {
  public:
   explicit Accumulator(size_t reserve = 0) {
-    if (reserve) observations_.reserve(reserve);
+    if (reserve) {
+      // reserve() alone leaves physical pages to fault in on the hot path.
+      // Value-initialize the final storage once, then reset only the logical
+      // size; clear() keeps both the allocation and its populated pages.
+      observations_.resize(reserve);
+      observations_.clear();
+    }
   }
 
   void record(uint64_t seq_id, uint64_t latency_ns) {
@@ -43,7 +49,7 @@ class Accumulator {
     }
     ++received_;
     observations_.push_back({seq_id, latency_ns});
-    sum_ += static_cast<double>(latency_ns);
+    sum_ += latency_ns;
   }
 
   const std::vector<Observation>& observations() const {
@@ -69,7 +75,8 @@ class Accumulator {
     std::sort(s.begin(), s.end());
     r.lat_min = s.front();
     r.lat_max = s.back();
-    r.lat_mean = sum_ / static_cast<double>(received_);
+    r.lat_mean =
+        static_cast<double>(sum_) / static_cast<double>(received_);
     r.p01 = percentile(s, 0.01);
     r.p50 = percentile(s, 0.50);
     r.p99 = percentile(s, 0.99);
@@ -93,7 +100,7 @@ class Accumulator {
   uint64_t received_ = 0;
   uint64_t first_seq_ = 0;
   uint64_t last_seq_ = 0;
-  double sum_ = 0.0;
+  uint64_t sum_ = 0;
   std::vector<Observation> observations_;
 };
 

@@ -2,6 +2,7 @@
 // No test framework -- just asserts, so this stays dependency-free and builds
 // with a single g++ invocation.
 #include <cassert>
+#include <cstdlib>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -10,6 +11,8 @@
 
 #include "metrics.h"
 #include "shm_ring.h"
+#include "spsc_ring_variants.h"
+#include "spsc_ring.h"
 
 namespace {
 
@@ -188,12 +191,193 @@ static void test_ring_rejects_overwrite_in_progress() {
   printf("test_ring_rejects_overwrite_in_progress OK\n");
 }
 
+static void test_sequence_ring_zero_copy_ownership() {
+  constexpr uint32_t slots = 2;
+  void* memory = nullptr;
+  assert(posix_memalign(&memory, shm::spsc::kCacheLine,
+                        shm::spsc::sequence_region_size(slots)) == 0);
+  std::memset(memory, 0, shm::spsc::sequence_region_size(slots));
+
+  shm::spsc::SequenceRing producer;
+  producer.attach(memory, slots, /*init=*/true);
+  shm::spsc::SequenceRing consumer;
+  consumer.attach(memory, slots, /*init=*/false);
+
+  uint8_t* first = producer.reserve();
+  assert(first != nullptr);
+  std::memset(first, 0x11, sizeof(msg::Trade));
+  reinterpret_cast<msg::Header*>(first)->seq_id = 1;
+  producer.publish_reserved(sizeof(msg::Trade));
+
+  uint8_t* second = producer.reserve();
+  assert(second != nullptr);
+  std::memset(second, 0x22, sizeof(msg::Trade));
+  reinterpret_cast<msg::Header*>(second)->seq_id = 2;
+  producer.publish_reserved(sizeof(msg::Trade));
+
+  // Both slots are reader-owned. The non-blocking producer reports a full
+  // queue instead of overwriting either view.
+  assert(producer.reserve() == nullptr);
+
+  const uint8_t* view = nullptr;
+  uint32_t len = 0;
+  uint64_t resume = 0;
+  assert(consumer.acquire(0, &view, &len, &resume) ==
+         shm::spsc::SequenceRing::FrameStatus::kOk);
+  assert(view == first);
+  assert(len == sizeof(msg::Trade));
+  assert(reinterpret_cast<const msg::Header*>(view)->seq_id == 1);
+  assert(view[sizeof(msg::Header)] == 0x11);
+
+  consumer.commit(0);
+  uint8_t* third = producer.reserve();
+  assert(third == first);
+  std::memset(third, 0x33, sizeof(msg::Trade));
+  reinterpret_cast<msg::Header*>(third)->seq_id = 3;
+  producer.publish_reserved(sizeof(msg::Trade));
+
+  assert(consumer.acquire(1, &view, &len, &resume) ==
+         shm::spsc::SequenceRing::FrameStatus::kOk);
+  assert(view == second);
+  assert(reinterpret_cast<const msg::Header*>(view)->seq_id == 2);
+  consumer.commit(1);
+
+  assert(consumer.acquire(2, &view, &len, &resume) ==
+         shm::spsc::SequenceRing::FrameStatus::kOk);
+  assert(view == third);
+  assert(reinterpret_cast<const msg::Header*>(view)->seq_id == 3);
+  consumer.commit(2);
+
+  std::free(memory);
+  printf("test_sequence_ring_zero_copy_ownership OK\n");
+}
+
+static void test_spsc_ring_zero_copy_wrap() {
+  const size_t region_size =
+      shm::spsc::experimental::cursor_region_size(2);
+  void* memory = nullptr;
+  assert(posix_memalign(&memory, shm::spsc::kCacheLine, region_size) == 0);
+  std::memset(memory, 0, region_size);
+  shm::spsc::experimental::CursorRing producer;
+  producer.attach(memory, 2, /*init=*/true);
+  shm::spsc::experimental::CursorRing consumer;
+  consumer.attach(memory, 2, /*init=*/false);
+
+  for (uint64_t sequence = 1; sequence <= 8; ++sequence) {
+    auto* frame = reinterpret_cast<msg::Trade*>(producer.reserve());
+    assert(frame != nullptr);
+    frame->header.seq_id = sequence;
+    frame->header.body_len = sizeof(*frame);
+    producer.publish_reserved(sizeof(*frame));
+
+    const uint8_t* view = nullptr;
+    uint32_t len = 0;
+    uint64_t resume = 0;
+    assert(consumer.acquire(sequence - 1, &view, &len, &resume) ==
+           shm::spsc::experimental::CursorRing::FrameStatus::kOk);
+    assert(len == sizeof(*frame));
+    assert(reinterpret_cast<const msg::Trade*>(view)->header.seq_id ==
+           sequence);
+    consumer.commit(sequence - 1);
+  }
+
+  std::free(memory);
+  printf("test_spsc_ring_zero_copy_wrap OK\n");
+}
+
+static void test_sequence_ring_live_edge_fast_forward() {
+  constexpr uint32_t slots = 4;
+  void* memory = nullptr;
+  assert(posix_memalign(&memory, shm::spsc::kCacheLine,
+                        shm::spsc::sequence_region_size(slots)) == 0);
+  std::memset(memory, 0, shm::spsc::sequence_region_size(slots));
+
+  shm::spsc::SequenceRing producer;
+  producer.attach(memory, slots, /*init=*/true);
+  shm::spsc::SequenceRing consumer;
+  consumer.attach(memory, slots, /*init=*/false);
+
+  for (uint64_t sequence = 1; sequence <= 2; ++sequence) {
+    uint8_t* frame = producer.reserve();
+    assert(frame != nullptr);
+    reinterpret_cast<msg::Header*>(frame)->seq_id = sequence;
+    producer.publish_reserved(sizeof(msg::Trade));
+  }
+
+  assert(consumer.live_edge() == 2);
+
+  // Publish a full fresh generation. The last two writes wrap over slots the
+  // consumer skipped without an O(slots) cleanup pass.
+  for (uint64_t sequence = 3; sequence <= 6; ++sequence) {
+    uint8_t* frame = producer.reserve();
+    assert(frame != nullptr);
+    reinterpret_cast<msg::Header*>(frame)->seq_id = sequence;
+    producer.publish_reserved(sizeof(msg::Trade));
+  }
+  assert(producer.reserve() == nullptr);
+
+  for (uint64_t read_index = 2; read_index < 6; ++read_index) {
+    const uint8_t* view = nullptr;
+    uint32_t len = 0;
+    uint64_t resume = 0;
+    assert(consumer.acquire(read_index, &view, &len, &resume) ==
+           shm::spsc::SequenceRing::FrameStatus::kOk);
+    assert(reinterpret_cast<const msg::Header*>(view)->seq_id ==
+           read_index + 1);
+    consumer.commit(read_index);
+  }
+
+  std::free(memory);
+  printf("test_sequence_ring_live_edge_fast_forward OK\n");
+}
+
+template <typename Ring>
+static void test_split_sequence_layout_wrap(size_t region_size,
+                                            const char* name) {
+  void* memory = nullptr;
+  assert(posix_memalign(&memory, shm::spsc::kCacheLine, region_size) == 0);
+  std::memset(memory, 0, region_size);
+  Ring producer;
+  producer.attach(memory, 2, /*init=*/true);
+  Ring consumer;
+  consumer.attach(memory, 2, /*init=*/false);
+  for (uint64_t sequence = 1; sequence <= 8; ++sequence) {
+    auto* frame = reinterpret_cast<msg::Trade*>(producer.reserve());
+    assert(frame != nullptr);
+    frame->header.seq_id = sequence;
+    frame->header.body_len = sizeof(*frame);
+    producer.publish_reserved(sizeof(*frame));
+    const uint8_t* view = nullptr;
+    uint32_t len = 0;
+    uint64_t resume = 0;
+    assert(consumer.acquire(sequence - 1, &view, &len, &resume) ==
+           Ring::FrameStatus::kOk);
+    assert(len == sizeof(*frame));
+    assert(reinterpret_cast<const msg::Trade*>(view)->header.seq_id ==
+           sequence);
+    consumer.commit(sequence - 1);
+  }
+  std::free(memory);
+  printf("%s OK\n", name);
+}
+
 int main() {
   test_metrics_basic();
   test_metrics_drops();
   test_ring_roundtrip();
   test_ring_lapping();
   test_ring_rejects_overwrite_in_progress();
+  test_sequence_ring_zero_copy_ownership();
+  test_spsc_ring_zero_copy_wrap();
+  test_sequence_ring_live_edge_fast_forward();
+  test_split_sequence_layout_wrap<
+      shm::spsc::experimental::SplitPaddedSequenceRing>(
+      shm::spsc::experimental::split_padded_region_size(2),
+      "test_split_padded_sequence_ring_wrap");
+  test_split_sequence_layout_wrap<
+      shm::spsc::experimental::SplitDenseSequenceRing>(
+      shm::spsc::experimental::split_dense_region_size(2),
+      "test_split_dense_sequence_ring_wrap");
   printf("ALL TESTS PASSED\n");
   return 0;
 }

@@ -1,15 +1,15 @@
 #pragma once
 
-#include <chrono>
 #include <cstdint>
+#include <ctime>
 
 namespace util {
 
 inline uint64_t now_ns() {
-  using namespace std::chrono;
-  return static_cast<uint64_t>(
-      duration_cast<nanoseconds>(system_clock::now().time_since_epoch())
-          .count());
+  timespec time{};
+  ::clock_gettime(CLOCK_REALTIME, &time);
+  return static_cast<uint64_t>(time.tv_sec) * 1'000'000'000ull +
+         static_cast<uint64_t>(time.tv_nsec);
 }
 
 }  // namespace util

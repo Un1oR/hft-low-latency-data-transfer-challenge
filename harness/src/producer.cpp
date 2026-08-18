@@ -13,13 +13,15 @@
 #include <string>
 
 #include "message.h"
-#include "shm_ring.h"
 #include "shm_segment.h"
+#include "spsc_ring.h"
+#include "spsc_ring_variants.h"
 #include "util.h"
 
 namespace {
 
 enum class Kind { Trade, Bbo, Book, Mixed };
+enum class RingKind { Sequence, Cursor, SplitSequence, DenseSequence };
 
 struct Config {
   std::string shm_name = "/fanout_ring";
@@ -27,6 +29,8 @@ struct Config {
   uint64_t count = 1000000;
   double rate = 0.0;
   Kind kind = Kind::Mixed;
+  RingKind ring_kind = RingKind::Sequence;
+  bool wait_for_reader = false;
 };
 
 bool is_power_of_two(uint32_t x) { return x != 0 && (x & (x - 1)) == 0; }
@@ -37,6 +41,18 @@ Kind parse_kind(const std::string& s) {
   if (s == "book") return Kind::Book;
   if (s == "mixed") return Kind::Mixed;
   fprintf(stderr, "--type must be trade|bbo|book|mixed (got %s)\n", s.c_str());
+  std::exit(2);
+}
+
+RingKind parse_ring_kind(const std::string& value) {
+  if (value == "sequence") return RingKind::Sequence;
+  if (value == "cursor") return RingKind::Cursor;
+  if (value == "split-sequence") return RingKind::SplitSequence;
+  if (value == "dense-sequence") return RingKind::DenseSequence;
+  fprintf(stderr,
+          "--ring must be sequence|cursor|split-sequence|dense-sequence "
+          "(got %s)\n",
+          value.c_str());
   std::exit(2);
 }
 
@@ -56,6 +72,8 @@ Config parse_args(int argc, char** argv) {
     else if (a == "--count") c.count = std::stoull(next());
     else if (a == "--rate") c.rate = std::stod(next());
     else if (a == "--type") c.kind = parse_kind(next());
+    else if (a == "--ring") c.ring_kind = parse_ring_kind(next());
+    else if (a == "--wait-for-reader") c.wait_for_reader = true;
     else {
       fprintf(stderr, "unknown arg: %s\n", a.c_str());
       std::exit(2);
@@ -191,28 +209,45 @@ const char* kind_name(Kind k) {
   }
 }
 
-}  // namespace
+const char* ring_name(RingKind kind) {
+  switch (kind) {
+    case RingKind::Sequence: return "sequence";
+    case RingKind::Cursor: return "cursor";
+    case RingKind::SplitSequence: return "split-sequence";
+    case RingKind::DenseSequence: return "dense-sequence";
+  }
+  return "unknown";
+}
 
-int main(int argc, char** argv) {
-  Config cfg = parse_args(argc, argv);
+template <typename Ring>
+size_t ring_region_size(uint32_t slots) {
+  return Ring::region_size(slots);
+}
 
-  shm::Segment seg =
-      shm::Segment::open(cfg.shm_name, shm::region_size(cfg.slots), /*create=*/true);
-  shm::Ring ring;
+template <typename Ring>
+int run(const Config& cfg) {
+  shm::Segment seg = shm::Segment::open(
+      cfg.shm_name, ring_region_size<Ring>(cfg.slots), /*create=*/true);
+  Ring ring;
   ring.attach(seg.base(), cfg.slots, /*init=*/true);
-
-  alignas(64) uint8_t frame[shm::kFrameCap];
 
   const uint64_t interval_ns =
       cfg.rate > 0.0 ? static_cast<uint64_t>(1e9 / cfg.rate) : 0;
   uint64_t next_send = util::now_ns();
 
-  fprintf(stderr, "producer: shm=%s slots=%u count=%llu rate=%.0f type=%s\n",
+  fprintf(stderr,
+          "producer: shm=%s slots=%u count=%llu rate=%.0f type=%s ring=%s\n",
           cfg.shm_name.c_str(), cfg.slots,
           static_cast<unsigned long long>(cfg.count), cfg.rate,
-          kind_name(cfg.kind));
+          kind_name(cfg.kind), ring_name(cfg.ring_kind));
+
+  if (cfg.wait_for_reader) {
+    while (!ring.reader_ready()) {
+    }
+  }
 
   uint64_t seq = 0;
+  uint64_t dropped = 0;
   while (cfg.count == 0 || seq < cfg.count) {
     if (interval_ns) {
       while (util::now_ns() < next_send) {
@@ -220,12 +255,34 @@ int main(int argc, char** argv) {
       next_send += interval_ns;
     }
     ++seq;
+    uint8_t* frame = ring.reserve();
+    if (frame == nullptr) {
+      ++dropped;
+      continue;
+    }
     const uint32_t len = build(cfg.kind, seq, frame);
-    ring.publish(frame, len);
+    ring.publish_reserved(len);
   }
 
-  fprintf(stderr, "producer: sent %llu messages\n",
-          static_cast<unsigned long long>(seq));
+  fprintf(stderr, "producer: generated %llu messages, queue-dropped %llu\n",
+          static_cast<unsigned long long>(seq),
+          static_cast<unsigned long long>(dropped));
   seg.unlink();
   return 0;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  const Config cfg = parse_args(argc, argv);
+  if (cfg.ring_kind == RingKind::Cursor) {
+    return run<shm::spsc::experimental::CursorRing>(cfg);
+  }
+  if (cfg.ring_kind == RingKind::SplitSequence) {
+    return run<shm::spsc::experimental::SplitPaddedSequenceRing>(cfg);
+  }
+  if (cfg.ring_kind == RingKind::DenseSequence) {
+    return run<shm::spsc::experimental::SplitDenseSequenceRing>(cfg);
+  }
+  return run<shm::spsc::SequenceRing>(cfg);
 }
