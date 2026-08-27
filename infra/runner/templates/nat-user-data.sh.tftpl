@@ -1,0 +1,18 @@
+#!/bin/bash
+set -euo pipefail
+
+cat >/etc/sysctl.d/90-spectral-nat.conf <<'SYSCTL'
+net.ipv4.ip_forward = 1
+SYSCTL
+/usr/sbin/sysctl --system
+
+dnf install -y iptables-services
+primary_interface="$(ip -o route show to default | awk '{print $5; exit}')"
+
+iptables -t nat -A POSTROUTING -s '${vpc_cidr}' -o "$primary_interface" -j MASQUERADE
+iptables -A FORWARD -s '${vpc_cidr}' -j ACCEPT
+iptables -A FORWARD -d '${vpc_cidr}' -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+service iptables save
+systemctl enable --now iptables
+
+shutdown -h +${ttl_minutes} "Spectral runner TTL expired"

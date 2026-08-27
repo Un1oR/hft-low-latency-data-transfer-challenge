@@ -1,0 +1,32 @@
+#!/bin/bash
+set -euo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+
+systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service || \
+  systemctl enable --now amazon-ssm-agent.service
+
+cat >/etc/systemd/system/spectral-runner-ttl.service <<'SERVICE'
+[Unit]
+Description=Terminate the temporary Spectral runner after its local TTL
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/shutdown -h now
+SERVICE
+
+cat >/etc/systemd/system/spectral-runner-ttl.timer <<'TIMER'
+[Unit]
+Description=Local fallback TTL for the temporary Spectral runner
+
+[Timer]
+OnBootSec=${ttl_minutes}min
+AccuracySec=1s
+Unit=spectral-runner-ttl.service
+
+[Install]
+WantedBy=timers.target
+TIMER
+
+systemctl daemon-reload
+systemctl enable --now spectral-runner-ttl.timer

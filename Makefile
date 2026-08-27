@@ -3,6 +3,14 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := all
 
 CMAKE_PRESET ?= release
+DEB_VERSION ?=
+AWS_RUNNER_PACKAGE ?=
+AWS_RUNNER_TTL_MINUTES ?= 15
+AWS_RUNNER_MESSAGE_COUNT ?= 1000000
+AWS_RUNNER_MESSAGE_RATE ?= 200000
+AWS_RUNNER_RUN_ID ?=
+AWS_RUNNER_AUTO_APPROVE ?= 0
+AWS_RUNNER_COMPACT_OUTPUT ?= 0
 
 HARNESS_DIR := $(CURDIR)/harness
 HARNESS_BIN := $(HARNESS_DIR)/bin
@@ -23,6 +31,7 @@ PERF := /usr/bin/perf
 PERF_SYSCTL_SOURCE := $(CURDIR)/config/sysctl.d/60-spectral-perf.conf
 PERF_SYSCTL_DEST := /etc/sysctl.d/60-spectral-perf.conf
 CPUFREQ_STATE := $(CURDIR)/build/cpufreq-state
+AWS_RUNNER_SCRIPT := $(CURDIR)/infra/runner/scripts/cluster.sh
 
 TX_NAMESPACE := spectral-tx
 RX_NAMESPACE := spectral-rx
@@ -103,7 +112,7 @@ $(TASKSET) -c "$(CONSUMER_CPU)" "$(HARNESS_BIN)/consumer" \
 endef
 
 .PHONY: \
-	all configure transport-build harness-build build test test-tsan clean help \
+	all configure transport-build harness-build build deb test test-tsan clean help \
 	setup-sudo setup-perf perf-check \
 	cpu-frequency-status cpu-frequency-set cpu-frequency-restore \
 	perf-stat-direct-producer perf-stat-direct-consumer perf-record-direct \
@@ -113,7 +122,11 @@ endef
 	net-up net-status netem-set netem-clear net-down \
 	run-test run-direct-test \
 	run-producer run-sender run-receiver run-consumer \
-	process-status shm-clean
+	process-status shm-clean \
+	aws-cluster-up aws-cluster-start aws-cluster-stop \
+	aws-cluster-update aws-cluster-extend \
+	aws-cluster-run aws-cluster-fetch aws-cluster-status aws-cluster-audit aws-cluster-down \
+	aws-cluster-e2e aws-cluster-cost
 
 all: build
 
@@ -129,6 +142,79 @@ harness-build:
 	@$(MAKE) --no-print-directory -C "$(HARNESS_DIR)" all
 
 build: harness-build transport-build
+
+deb:
+	@set -euo pipefail
+	if [[ -n "$(DEB_VERSION)" ]]; then
+		"$(CURDIR)/scripts/build-deb-ubuntu24.sh" "$(DEB_VERSION)"
+	else
+		"$(CURDIR)/scripts/build-deb-ubuntu24.sh"
+	fi
+
+aws-cluster-up: deb
+	@AWS_RUNNER_PACKAGE="$(AWS_RUNNER_PACKAGE)" \
+	AWS_RUNNER_TTL_MINUTES="$(AWS_RUNNER_TTL_MINUTES)" \
+	AWS_RUNNER_AUTO_APPROVE="$(AWS_RUNNER_AUTO_APPROVE)" \
+	"$(AWS_RUNNER_SCRIPT)" up
+
+aws-cluster-update: deb
+	@AWS_RUNNER_PACKAGE="$(AWS_RUNNER_PACKAGE)" \
+	AWS_RUNNER_AUTO_APPROVE="$(AWS_RUNNER_AUTO_APPROVE)" \
+	"$(AWS_RUNNER_SCRIPT)" update
+
+aws-cluster-start:
+	@AWS_RUNNER_PACKAGE="$(AWS_RUNNER_PACKAGE)" \
+	AWS_RUNNER_TTL_MINUTES="$(AWS_RUNNER_TTL_MINUTES)" \
+	AWS_RUNNER_AUTO_APPROVE="$(AWS_RUNNER_AUTO_APPROVE)" \
+	"$(AWS_RUNNER_SCRIPT)" start
+
+aws-cluster-stop:
+	@AWS_RUNNER_PACKAGE="$(AWS_RUNNER_PACKAGE)" \
+	AWS_RUNNER_TTL_MINUTES="$(AWS_RUNNER_TTL_MINUTES)" \
+	AWS_RUNNER_AUTO_APPROVE="$(AWS_RUNNER_AUTO_APPROVE)" \
+	"$(AWS_RUNNER_SCRIPT)" stop
+
+aws-cluster-extend:
+	@AWS_RUNNER_PACKAGE="$(AWS_RUNNER_PACKAGE)" \
+	AWS_RUNNER_TTL_MINUTES="$(AWS_RUNNER_TTL_MINUTES)" \
+	AWS_RUNNER_AUTO_APPROVE="$(AWS_RUNNER_AUTO_APPROVE)" \
+	"$(AWS_RUNNER_SCRIPT)" extend
+
+aws-cluster-run:
+	@AWS_RUNNER_PACKAGE="$(AWS_RUNNER_PACKAGE)" \
+	AWS_RUNNER_TTL_MINUTES="$(AWS_RUNNER_TTL_MINUTES)" \
+	AWS_RUNNER_MESSAGE_COUNT="$(AWS_RUNNER_MESSAGE_COUNT)" \
+	AWS_RUNNER_MESSAGE_RATE="$(AWS_RUNNER_MESSAGE_RATE)" \
+	AWS_RUNNER_AUTO_APPROVE="$(AWS_RUNNER_AUTO_APPROVE)" \
+	"$(AWS_RUNNER_SCRIPT)" run
+
+aws-cluster-fetch:
+	@AWS_RUNNER_RUN_ID="$(AWS_RUNNER_RUN_ID)" \
+	"$(AWS_RUNNER_SCRIPT)" fetch
+
+aws-cluster-status:
+	@"$(AWS_RUNNER_SCRIPT)" status
+
+aws-cluster-audit:
+	@"$(AWS_RUNNER_SCRIPT)" audit
+
+aws-cluster-down:
+	@AWS_RUNNER_PACKAGE="$(AWS_RUNNER_PACKAGE)" \
+	AWS_RUNNER_AUTO_APPROVE="$(AWS_RUNNER_AUTO_APPROVE)" \
+	AWS_RUNNER_COMPACT_OUTPUT="$(AWS_RUNNER_COMPACT_OUTPUT)" \
+	"$(AWS_RUNNER_SCRIPT)" down
+
+aws-cluster-e2e: deb
+	@AWS_RUNNER_PACKAGE="$(AWS_RUNNER_PACKAGE)" \
+	AWS_RUNNER_TTL_MINUTES="$(AWS_RUNNER_TTL_MINUTES)" \
+	AWS_RUNNER_MESSAGE_COUNT="$(AWS_RUNNER_MESSAGE_COUNT)" \
+	AWS_RUNNER_MESSAGE_RATE="$(AWS_RUNNER_MESSAGE_RATE)" \
+	AWS_RUNNER_AUTO_APPROVE="$(AWS_RUNNER_AUTO_APPROVE)" \
+	AWS_RUNNER_COMPACT_OUTPUT=1 \
+	"$(AWS_RUNNER_SCRIPT)" e2e
+
+aws-cluster-cost:
+	@"$(CURDIR)/infra/runner/scripts/cluster-cost.py"
 
 test: build
 	@$(MAKE) --no-print-directory -C "$(HARNESS_DIR)" test
@@ -889,8 +975,25 @@ shm-clean:
 help:
 	@echo "Build and verification:"
 	echo "  make build                  build legacy harness and C++23 transport"
+	echo "  make deb                    build and verify Ubuntu 24.04 Debian package"
+	echo "    DEB_VERSION=0.1.0-1       override package version"
 	echo "  make test                   build and run unit and clean-veth tests"
 	echo "  make test-tsan              direct ring unit/handoff tests under TSAN"
+	echo
+	echo "AWS benchmark cluster:"
+	echo "  make aws-cluster-up         build .deb and create the cluster"
+	echo "  make aws-cluster-run        extend TTL, run strict READY handshake, save results"
+	echo "  make aws-cluster-fetch      download the latest or AWS_RUNNER_RUN_ID result"
+	echo "  make aws-cluster-update     build and install a new .deb without replacing EC2"
+	echo "  make aws-cluster-extend     synchronously extend Scheduler and all local timers"
+	echo "  make aws-cluster-stop       pause all EC2; compute billing stops, EBS remains"
+	echo "  make aws-cluster-start      start NAT and runners, arm and verify a new TTL"
+	echo "  make aws-cluster-status     show Terraform outputs and live EC2 states"
+	echo "  make aws-cluster-audit      verify that no billable cluster resources remain"
+	echo "  make aws-cluster-down       destroy the cluster and verify EC2/EBS cleanup"
+	echo "  make aws-cluster-e2e        down/up/run/stop/fetch/start/stop with timings"
+	echo "  make aws-cluster-cost       price the latest E2E timing and stopped storage"
+	echo "    AWS_RUNNER_TTL_MINUTES=15 AWS_RUNNER_AUTO_APPROVE=1"
 	echo
 	echo "Machine setup:"
 	echo "  make setup-sudo             install scoped passwordless network access"

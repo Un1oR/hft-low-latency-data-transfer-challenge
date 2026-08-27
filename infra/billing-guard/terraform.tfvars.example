@@ -1,0 +1,3 @@
+budget_amount_usd = 10
+alert_email       = "you@example.com"
+workload_regions  = ["us-east-1"]

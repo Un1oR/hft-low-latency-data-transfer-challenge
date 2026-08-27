@@ -1,0 +1,147 @@
+# syntax=docker/dockerfile:1.7
+
+FROM ubuntu:24.04@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467 AS builder
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG CMAKE_VERSION=4.2.5
+ARG LLVM_VERSION=22
+ARG NFPM_VERSION=2.47.0
+ARG NFPM_SHA256=3f1cf344bd0b57373ca55636a78c08b0491f7293d609a456a9ac3b0b150fda97
+
+SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        curl \
+        gnupg \
+        ninja-build \
+        patchelf \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+        -o /tmp/llvm-snapshot.gpg.key \
+    && key_fingerprint="$(gpg --show-keys --with-colons \
+        /tmp/llvm-snapshot.gpg.key | awk -F: '$1 == "fpr" {print $10; exit}')" \
+    && test "$key_fingerprint" = "6084F3CF814B57C1CF12EFD515CF4D18AF4F7421" \
+    && gpg --dearmor --yes \
+        -o /usr/share/keyrings/apt.llvm.org.gpg \
+        /tmp/llvm-snapshot.gpg.key \
+    && echo "deb [signed-by=/usr/share/keyrings/apt.llvm.org.gpg] https://apt.llvm.org/noble/ llvm-toolchain-noble-${LLVM_VERSION} main" \
+        > /etc/apt/sources.list.d/llvm.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        "clang-${LLVM_VERSION}" \
+        "libc++-${LLVM_VERSION}-dev" \
+        "libc++abi-${LLVM_VERSION}-dev" \
+        "lld-${LLVM_VERSION}" \
+    && ln -s "/usr/bin/clang-${LLVM_VERSION}" /usr/local/bin/clang \
+    && ln -s "/usr/bin/clang++-${LLVM_VERSION}" /usr/local/bin/clang++ \
+    && ln -s "/usr/bin/ld.lld-${LLVM_VERSION}" /usr/local/bin/ld.lld \
+    && rm -rf /var/lib/apt/lists/* /tmp/llvm-snapshot.gpg.key
+
+RUN cmake_archive="cmake-${CMAKE_VERSION}-linux-x86_64.tar.gz" \
+    && curl -fsSLO "https://cmake.org/files/v4.2/${cmake_archive}" \
+    && curl -fsSLO "https://cmake.org/files/v4.2/cmake-${CMAKE_VERSION}-SHA-256.txt" \
+    && grep " ${cmake_archive}$" "cmake-${CMAKE_VERSION}-SHA-256.txt" \
+        | sha256sum --check - \
+    && tar -xzf "$cmake_archive" -C /opt \
+    && ln -s "/opt/cmake-${CMAKE_VERSION}-linux-x86_64/bin/cmake" \
+        /usr/local/bin/cmake \
+    && ln -s "/opt/cmake-${CMAKE_VERSION}-linux-x86_64/bin/ctest" \
+        /usr/local/bin/ctest \
+    && rm -f "$cmake_archive" "cmake-${CMAKE_VERSION}-SHA-256.txt"
+
+RUN curl -fsSL \
+        "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_amd64.deb" \
+        -o /tmp/nfpm.deb \
+    && printf '%s  %s\n' "$NFPM_SHA256" /tmp/nfpm.deb \
+        | sha256sum --check - \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends /tmp/nfpm.deb \
+    && rm -rf /var/lib/apt/lists/* /tmp/nfpm.deb
+
+WORKDIR /src
+
+COPY CMakeLists.txt CMakePresets.json ./
+COPY transport/ transport/
+COPY harness/ harness/
+COPY packaging/nfpm.yaml packaging/nfpm.yaml
+
+RUN cmake --preset release \
+    && cmake --build --preset release --parallel \
+    && make --no-print-directory -C harness all test
+
+RUN install -d \
+        package/usr/libexec/spectral-task/bin \
+        package/usr/libexec/spectral-task/lib \
+        package/usr/share/doc/spectral-task/third-party \
+    && install -m 0755 \
+        build/release/bin/sender \
+        build/release/bin/receiver \
+        harness/bin/producer \
+        harness/bin/consumer \
+        package/usr/libexec/spectral-task/bin/ \
+    && for soname in libc++.so.1 libc++abi.so.1; do \
+        library_path="$(clang++ -print-file-name="$soname")"; \
+        test "$library_path" != "$soname"; \
+        install -m 0644 "$library_path" \
+            "package/usr/libexec/spectral-task/lib/$soname"; \
+    done \
+    && unwind_path="$(clang++ -print-file-name=libunwind.so.1)" \
+    && if test "$unwind_path" != "libunwind.so.1"; then \
+        install -m 0644 "$unwind_path" \
+            package/usr/libexec/spectral-task/lib/libunwind.so.1; \
+    fi \
+    && for binary in sender receiver; do \
+        patchelf --set-rpath '$ORIGIN/../lib' \
+            "package/usr/libexec/spectral-task/bin/$binary"; \
+    done \
+    && for library in package/usr/libexec/spectral-task/lib/*.so.1; do \
+        patchelf --set-rpath '$ORIGIN' "$library"; \
+    done \
+    && install -m 0644 /usr/share/doc/libc++1/copyright \
+        package/usr/share/doc/spectral-task/third-party/libc++.copyright \
+    && install -m 0644 /usr/share/doc/libc++abi1/copyright \
+        package/usr/share/doc/spectral-task/third-party/libc++abi.copyright \
+    && ! ldd package/usr/libexec/spectral-task/bin/sender | grep -q 'not found' \
+    && ! ldd package/usr/libexec/spectral-task/bin/receiver | grep -q 'not found'
+
+ARG PACKAGE_VERSION
+ENV PACKAGE_VERSION=${PACKAGE_VERSION}
+
+RUN test -n "$PACKAGE_VERSION" \
+    && mkdir -p /out \
+    && nfpm package \
+        --config packaging/nfpm.yaml \
+        --packager deb \
+        --target /out \
+    && dpkg-deb --info /out/*.deb \
+    && dpkg-deb --contents /out/*.deb
+
+FROM ubuntu:24.04@sha256:019e8eb29a85e74d64925745884f2ec79aa27e3feab36353d24656f4d6b89467 AS verifier
+
+ARG DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
+
+COPY --from=builder /out/ /out/
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends /out/*.deb \
+    && rm -rf /var/lib/apt/lists/* \
+    && for binary in sender receiver producer consumer; do \
+        set +e; \
+        "/usr/libexec/spectral-task/bin/$binary" --help >/tmp/output 2>&1; \
+        status=$?; \
+        set -e; \
+        test "$status" -eq 2; \
+    done \
+    && ! ldd /usr/libexec/spectral-task/bin/sender | grep -q 'not found' \
+    && ! ldd /usr/libexec/spectral-task/bin/receiver | grep -q 'not found' \
+    && install -d /verified \
+    && cp /out/*.deb /verified/
+
+FROM scratch AS package
+
+COPY --from=verifier /verified/ /

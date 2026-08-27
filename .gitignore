@@ -4,6 +4,20 @@
 /.venv/
 /.ipynb_checkpoints/
 /tmp/
+/dist/
 /data/latency*.csv
+/artifacts/aws-runner/
 __pycache__/
 *.py[cod]
+
+# Terraform local state and generated packages
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example
+.terraform.tfstate.lock.info
+crash.log
+crash.*.log
+budget-stop.zip

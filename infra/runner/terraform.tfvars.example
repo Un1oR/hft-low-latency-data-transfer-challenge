@@ -1,0 +1,5 @@
+aws_region           = "us-east-1"
+runner_instance_type = "m8a.xlarge"
+nat_instance_type    = "t4g.nano"
+package_path         = "../../dist/spectral-task_0.1.0-1_amd64.deb"
+max_runtime_minutes  = 15
