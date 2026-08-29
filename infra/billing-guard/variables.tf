@@ -1,5 +1,5 @@
 variable "budget_amount_usd" {
-  description = "Месячный бюджет по расходу до credits и refunds."
+  description = "Месячный бюджет реальных расходов после credits и refunds."
   type        = number
   default     = 10
 

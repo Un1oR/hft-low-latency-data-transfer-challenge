@@ -28,6 +28,11 @@ endif()
 
 project(spectral_task VERSION 0.1.0 LANGUAGES CXX)
 
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(DPDK QUIET IMPORTED_TARGET libdpdk)
+endif()
+
 function(spectral_configure_target target)
     target_compile_features("${target}" PUBLIC cxx_std_23)
     set_target_properties(
@@ -56,14 +61,30 @@ target_sources(
     PUBLIC
         FILE_SET CXX_MODULES
         BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/transport"
-        FILES transport/spectral.transport.cppm
+        FILES
+            transport/spectral.transport.cppm
+            transport/spectral.wire.cppm
     PRIVATE
         transport/src/sender.cpp
         transport/src/receiver.cpp
 )
+if(TARGET PkgConfig::DPDK)
+    target_sources(
+        spectral_transport
+        PUBLIC
+            FILE_SET CXX_MODULES
+            BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/transport"
+            FILES transport/spectral.dpdk.cppm
+    )
+    target_link_libraries(spectral_transport PUBLIC PkgConfig::DPDK)
+    target_compile_definitions(spectral_transport PUBLIC SPECTRAL_HAS_DPDK=1)
+else()
+    target_compile_definitions(spectral_transport PUBLIC SPECTRAL_HAS_DPDK=0)
+endif()
 target_include_directories(
     spectral_transport
-    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/harness/include"
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/harness/include"
 )
 target_link_libraries(spectral_transport PUBLIC rt pthread)
 spectral_configure_target(spectral_transport)
@@ -75,3 +96,19 @@ spectral_configure_target(sender)
 add_executable(receiver transport/apps/receiver.cpp)
 target_link_libraries(receiver PRIVATE spectral_transport)
 spectral_configure_target(receiver)
+
+add_executable(clock_probe tools/clock_probe.cpp)
+target_link_libraries(clock_probe PRIVATE pthread)
+spectral_configure_target(clock_probe)
+
+enable_testing()
+add_executable(transport_wire_test transport/test/test_wire_protocol.cpp)
+target_include_directories(
+    transport_wire_test
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/harness/include"
+)
+target_link_libraries(transport_wire_test PRIVATE spectral_transport)
+spectral_configure_target(transport_wire_test)
+target_compile_options(transport_wire_test PRIVATE -UNDEBUG)
+add_test(NAME transport_wire_protocol COMMAND transport_wire_test)

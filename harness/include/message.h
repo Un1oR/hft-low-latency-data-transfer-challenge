@@ -1,106 +1,125 @@
-// Wire messages for the fan-out harness. Every frame begins with a common
-// Header carrying the sequence id and send timestamp the consumer uses to
-// measure delivery; the rest of the frame describes a market-data event -- a
-// trade, a top-of-book (BBO) update, or a 5-level order book snapshot.
+// Compact, self-contained market-data frames shared by the producer, transport
+// and consumer. seq_id and send_ts_ns are the measurement contract; every
+// other field is encoded once in its canonical integer representation.
 #pragma once
 
 #include <cstdint>
 
 namespace msg {
 
-inline constexpr uint32_t kSymbolLen = 16;
-inline constexpr uint32_t kVenueLen = 16;
-inline constexpr uint32_t kCurrencyLen = 8;
 inline constexpr uint32_t kBookDepth = 5;
 
-enum class Type : uint16_t {
+enum class Type : uint8_t {
   Trade = 1,
   Bbo = 2,
   OrderBook = 3,
 };
 
-// Common framing header at the start of every message.
+// Static reference data is negotiated outside the event stream. A frame carries
+// its numeric instrument id instead of repeating names and currencies.
+struct Instrument {
+  const char* symbol;
+  const char* venue;
+  const char* base_currency;
+  const char* quote_currency;
+};
+
+inline constexpr Instrument kInstruments[] = {
+    {"BTCUSDT", "BINANCE", "BTC", "USDT"},
+};
+inline constexpr uint16_t kInstrumentCount =
+    static_cast<uint16_t>(sizeof(kInstruments) / sizeof(kInstruments[0]));
+
+inline constexpr double kPriceTickSize = 0.01;
+inline constexpr double kQuantityLotSize = 0.001;
+
+inline constexpr uint8_t kFlagAggressorSell = 1u << 0;
+inline constexpr uint8_t kFlagBlockTrade = 1u << 1;
+inline constexpr uint8_t kFlagRpi = 1u << 2;
+inline constexpr uint8_t kFlagLiquidation = 1u << 3;
+inline constexpr uint8_t kFlagSnapshot = 1u << 4;
+inline constexpr uint8_t kTickDirectionShift = 5;
+inline constexpr uint8_t kTickDirectionMask = 0x3u << kTickDirectionShift;
+
 struct Header {
-  uint64_t seq_id;      // monotonic, starts at 1
-  uint64_t send_ts_ns;  // producer send timestamp, ns since epoch
-  uint16_t type;        // Type
-  uint16_t version;
-  uint32_t body_len;    // total message size in bytes
-};
-
-struct alignas(64) Trade {
-  Header header;
-  char symbol[kSymbolLen];
-  char venue[kVenueLen];
-  char base_currency[kCurrencyLen];
-  char quote_currency[kCurrencyLen];
-  uint64_t trade_id;
-  uint64_t buyer_order_id;
-  uint64_t seller_order_id;
-  uint64_t exchange_ts_ns;
-  uint64_t match_engine_ts_ns;
-  double price;
-  double quantity;
-  double notional;
-  int64_t price_ticks;
-  int64_t quantity_lots;
-  uint32_t tick_direction;
-  uint8_t aggressor_side;  // 0 = buy, 1 = sell
-  uint8_t is_block_trade;
-  uint8_t is_rpi;
-  uint8_t is_liquidation;
+  uint64_t seq_id;
+  uint64_t send_ts_ns;
+  uint16_t instrument;
+  uint8_t type;
   uint8_t flags;
-  uint8_t reserved[19];
-};
-
-struct alignas(64) Bbo {
-  Header header;
-  char symbol[kSymbolLen];
-  char venue[kVenueLen];
-  uint64_t update_id;
-  uint64_t exchange_ts_ns;
-  uint64_t match_engine_ts_ns;
-  double bid_price;
-  double bid_size;
-  double ask_price;
-  double ask_size;
-  int64_t bid_price_ticks;
-  int64_t ask_price_ticks;
-  int64_t bid_size_lots;
-  int64_t ask_size_lots;
-  uint32_t bid_order_count;
-  uint32_t ask_order_count;
-  uint8_t flags;
-  uint8_t reserved[23];
-};
-
-struct Level {
-  double price;
-  double size;
-  int64_t price_ticks;
-  int64_t size_lots;
-  uint32_t order_count;
+  int32_t exchange_ts_delta_ns;
+  int32_t match_engine_ts_delta_ns;
   uint32_t reserved;
 };
+static_assert(sizeof(Header) == 32);
 
-struct alignas(64) OrderBook {
+struct alignas(8) Trade {
   Header header;
-  char symbol[kSymbolLen];
-  char venue[kVenueLen];
-  uint64_t update_id;
-  uint64_t prev_update_id;
-  uint64_t exchange_ts_ns;
-  uint64_t match_engine_ts_ns;
-  Level bids[kBookDepth];
-  Level asks[kBookDepth];
-  uint32_t checksum;
-  uint8_t is_snapshot;
-  uint8_t flags;
-  uint8_t reserved[26];
+  int64_t price_ticks;
+  int64_t quantity_lots;
+  uint64_t trade_id;
+  // A lost trade is visible in seq_id. These absolute running totals let the
+  // receiver recover volume, notional and count on the next trade.
+  uint64_t cumulative_quantity_lots;
+  uint64_t cumulative_notional_ticks;
+  uint64_t cumulative_trade_count;
 };
+static_assert(sizeof(Trade) == 80);
+
+struct alignas(8) Bbo {
+  Header header;
+  uint64_t update_id;
+  int64_t bid_price_ticks;
+  int32_t spread_ticks;
+  int32_t bid_size_lots;
+  int32_t ask_size_lots;
+  uint16_t bid_order_count;
+  uint16_t ask_order_count;
+};
+static_assert(sizeof(Bbo) == 64);
+
+struct BookSide {
+  int64_t top_price_ticks;
+  int32_t price_offset_ticks[kBookDepth - 1];
+  int32_t size_lots[kBookDepth];
+  uint16_t order_count[kBookDepth];
+  uint16_t reserved;
+};
+static_assert(sizeof(BookSide) == 56);
+
+struct alignas(8) OrderBook {
+  Header header;
+  uint64_t update_id;
+  uint16_t previous_update_gap;
+  uint16_t reserved;
+  uint32_t checksum;
+  BookSide bids;
+  BookSide asks;
+};
+static_assert(sizeof(OrderBook) == 160);
 
 inline constexpr uint32_t kMaxFrame = sizeof(OrderBook);
-static_assert(sizeof(Trade) <= kMaxFrame, "kMaxFrame must fit every message");
-static_assert(sizeof(Bbo) <= kMaxFrame, "kMaxFrame must fit every message");
+
+inline constexpr uint32_t frame_size(uint8_t type) {
+  switch (static_cast<Type>(type)) {
+    case Type::Trade:
+      return sizeof(Trade);
+    case Type::Bbo:
+      return sizeof(Bbo);
+    case Type::OrderBook:
+      return sizeof(OrderBook);
+  }
+  return 0;
+}
+
+inline uint64_t exchange_ts_ns(const Header& header) {
+  return header.send_ts_ns -
+         static_cast<uint64_t>(header.exchange_ts_delta_ns);
+}
+
+inline uint64_t match_engine_ts_ns(const Header& header) {
+  return exchange_ts_ns(header) -
+         static_cast<uint64_t>(header.match_engine_ts_delta_ns);
+}
 
 }  // namespace msg

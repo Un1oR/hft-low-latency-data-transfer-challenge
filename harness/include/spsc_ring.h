@@ -31,12 +31,30 @@ static_assert(offsetof(Header, write_index) == kCacheLine);
 static_assert(offsetof(Header, read_index) == 2 * kCacheLine);
 static_assert(sizeof(Header) == 3 * kCacheLine);
 
-inline constexpr uint32_t kMagic = 0x53504332;  // "SPC2"
+inline constexpr uint32_t kMagic = 0x53504335;  // "SPC5"
+
+// Optional out-of-band timestamps for diagnostic runs. They live in the
+// alignment padding after the largest frame, so the slot remains 256 bytes and
+// the compact wire protocol is unchanged.
+struct StageTimestamps {
+  uint64_t transport_send_ts_ns;
+  // Always CLOCK_REALTIME, like the producer and consumer timestamps.
+  uint64_t transport_receive_ts_ns;
+  // Optional ENA hardware RX timestamp converted from the local PHC to
+  // CLOCK_REALTIME with a measured receiver-local calibration.
+  uint64_t hardware_receive_realtime_ns;
+  // CLOCK_REALTIME immediately after the rte_eth_rx_burst call which returned
+  // this packet. All packets in the same DPDK burst share this timestamp.
+  uint64_t dpdk_rx_burst_return_realtime_ns;
+};
+static_assert(sizeof(StageTimestamps) == 32);
 
 inline __attribute__((always_inline)) void copy_frame(
     void* destination, const void* source, uint32_t len) {
   if (len == sizeof(msg::Trade)) {
     __builtin_memcpy(destination, source, sizeof(msg::Trade));
+  } else if (len == sizeof(msg::Bbo)) {
+    __builtin_memcpy(destination, source, sizeof(msg::Bbo));
   } else if (len == sizeof(msg::OrderBook)) {
     __builtin_memcpy(destination, source, sizeof(msg::OrderBook));
   } else {
@@ -51,10 +69,15 @@ struct alignas(kCacheLine) SequenceSlot {
   std::atomic<uint64_t> sequence;
   uint32_t frame_len;
   alignas(kCacheLine) uint8_t frame[kFrameCap];
+  StageTimestamps stage_timestamps;
 };
 
 static_assert(offsetof(SequenceSlot, frame) == kCacheLine);
-static_assert(sizeof(SequenceSlot) == kCacheLine + kFrameCap);
+static_assert(offsetof(SequenceSlot, stage_timestamps) ==
+              kCacheLine + kFrameCap);
+static_assert(sizeof(SequenceSlot) ==
+              ((kCacheLine + kFrameCap + kCacheLine - 1) / kCacheLine) *
+                  kCacheLine);
 
 class SequenceRing {
  public:
@@ -93,6 +116,15 @@ class SequenceRing {
     return true;
   }
 
+  bool publish(const void* frame, uint32_t len,
+               StageTimestamps stage_timestamps) {
+    uint8_t* destination = reserve();
+    if (destination == nullptr) return false;
+    copy_frame(destination, frame, len);
+    publish_reserved(len, stage_timestamps);
+    return true;
+  }
+
   // Reserve the next producer-owned slot so the caller can construct a frame
   // directly in shared memory. Exactly one publish_reserved() must follow a
   // successful reservation before reserve() is called again.
@@ -112,11 +144,28 @@ class SequenceRing {
   void publish_reserved(uint32_t len) {
     SequenceSlot& slot = slots_[next_write_index_ & mask_];
     slot.frame_len = len;
+    publish_slot(slot);
+  }
+
+  void publish_reserved(uint32_t len, StageTimestamps stage_timestamps) {
+    SequenceSlot& slot = slots_[next_write_index_ & mask_];
+    slot.frame_len = len;
+    slot.stage_timestamps = stage_timestamps;
+    publish_slot(slot);
+  }
+
+  StageTimestamps stage_timestamps(uint64_t read_index) const {
+    return slots_[read_index & mask_].stage_timestamps;
+  }
+
+ private:
+  void publish_slot(SequenceSlot& slot) {
     ++next_write_index_;
     slot.sequence.store(next_write_index_, std::memory_order_release);
     header_->write_index.store(next_write_index_, std::memory_order_release);
   }
 
+ public:
   uint64_t live_edge() {
     const uint64_t edge =
         header_->write_index.load(std::memory_order_acquire);

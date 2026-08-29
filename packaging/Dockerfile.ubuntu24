@@ -7,6 +7,9 @@ ARG CMAKE_VERSION=4.2.5
 ARG LLVM_VERSION=22
 ARG NFPM_VERSION=2.47.0
 ARG NFPM_SHA256=3f1cf344bd0b57373ca55636a78c08b0491f7293d609a456a9ac3b0b150fda97
+ARG DPDK_VERSION=25.11.3
+ARG DPDK_SHA256=3719acc586b310c4f60ba230683bf4f1e12c6f2f5bee11f7c01b1bbd0ded7490
+ENV SPECTRAL_DPDK_PREFIX=/usr/libexec/spectral-task/dpdk-${DPDK_VERSION}
 
 SHELL ["/bin/bash", "-euxo", "pipefail", "-c"]
 
@@ -16,8 +19,12 @@ RUN apt-get update \
         ca-certificates \
         curl \
         gnupg \
+        libnuma-dev \
+        meson \
         ninja-build \
         patchelf \
+        pkg-config \
+        python3-pyelftools \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
@@ -62,27 +69,56 @@ RUN curl -fsSL \
     && apt-get install -y --no-install-recommends /tmp/nfpm.deb \
     && rm -rf /var/lib/apt/lists/* /tmp/nfpm.deb
 
+RUN dpdk_archive="dpdk-${DPDK_VERSION}.tar.xz" \
+    && curl -fsSL "https://fast.dpdk.org/rel/${dpdk_archive}" \
+        -o "/tmp/${dpdk_archive}" \
+    && printf '%s  %s\n' "$DPDK_SHA256" "/tmp/${dpdk_archive}" \
+        | sha256sum --check - \
+    && mkdir -p /tmp/dpdk-source \
+    && tar -xJf "/tmp/${dpdk_archive}" \
+        -C /tmp/dpdk-source --strip-components=1 \
+    && meson setup /tmp/dpdk-build /tmp/dpdk-source \
+        --prefix "$SPECTRAL_DPDK_PREFIX" \
+        --libdir lib/x86_64-linux-gnu \
+        -Ddefault_library=shared \
+        -Denable_apps=test-pmd \
+        -Denable_drivers=net/ena \
+        -Dplatform=generic \
+        -Dtests=false \
+    && ninja -C /tmp/dpdk-build \
+    && ninja -C /tmp/dpdk-build install \
+    && rm -rf "/tmp/${dpdk_archive}" /tmp/dpdk-build
+
+ENV PKG_CONFIG_PATH=${SPECTRAL_DPDK_PREFIX}/lib/x86_64-linux-gnu/pkgconfig
+
 WORKDIR /src
 
 COPY CMakeLists.txt CMakePresets.json ./
 COPY transport/ transport/
 COPY harness/ harness/
+COPY tools/ tools/
 COPY packaging/nfpm.yaml packaging/nfpm.yaml
 
 RUN cmake --preset release \
     && cmake --build --preset release --parallel \
+    && ctest --test-dir build/release --output-on-failure \
     && make --no-print-directory -C harness all test
 
 RUN install -d \
         package/usr/libexec/spectral-task/bin \
         package/usr/libexec/spectral-task/lib \
         package/usr/share/doc/spectral-task/third-party \
+    && cp -a "$SPECTRAL_DPDK_PREFIX" \
+        "package/usr/libexec/spectral-task/" \
     && install -m 0755 \
         build/release/bin/sender \
         build/release/bin/receiver \
+        build/release/bin/clock_probe \
         harness/bin/producer \
         harness/bin/consumer \
         package/usr/libexec/spectral-task/bin/ \
+    && ln -s "../dpdk-${DPDK_VERSION}/bin/dpdk-testpmd" \
+        package/usr/libexec/spectral-task/bin/dpdk-testpmd \
     && for soname in libc++.so.1 libc++abi.so.1; do \
         library_path="$(clang++ -print-file-name="$soname")"; \
         test "$library_path" != "$soname"; \
@@ -95,9 +131,15 @@ RUN install -d \
             package/usr/libexec/spectral-task/lib/libunwind.so.1; \
     fi \
     && for binary in sender receiver; do \
-        patchelf --set-rpath '$ORIGIN/../lib' \
+        patchelf --force-rpath \
+            --set-rpath "/usr/libexec/spectral-task/dpdk-${DPDK_VERSION}/lib/x86_64-linux-gnu:\$ORIGIN/../lib" \
             "package/usr/libexec/spectral-task/bin/$binary"; \
     done \
+    && patchelf --set-rpath '$ORIGIN/../lib' \
+        package/usr/libexec/spectral-task/bin/clock_probe \
+    && patchelf --force-rpath \
+        --set-rpath "/usr/libexec/spectral-task/dpdk-${DPDK_VERSION}/lib/x86_64-linux-gnu" \
+        "package/usr/libexec/spectral-task/dpdk-${DPDK_VERSION}/bin/dpdk-testpmd" \
     && for library in package/usr/libexec/spectral-task/lib/*.so.1; do \
         patchelf --set-rpath '$ORIGIN' "$library"; \
     done \
@@ -105,8 +147,12 @@ RUN install -d \
         package/usr/share/doc/spectral-task/third-party/libc++.copyright \
     && install -m 0644 /usr/share/doc/libc++abi1/copyright \
         package/usr/share/doc/spectral-task/third-party/libc++abi.copyright \
-    && ! ldd package/usr/libexec/spectral-task/bin/sender | grep -q 'not found' \
-    && ! ldd package/usr/libexec/spectral-task/bin/receiver | grep -q 'not found'
+    && install -m 0644 /tmp/dpdk-source/license/README \
+        package/usr/share/doc/spectral-task/third-party/dpdk-license.README \
+    && for binary in sender receiver clock_probe dpdk-testpmd; do \
+        ! ldd "package/usr/libexec/spectral-task/bin/$binary" \
+            | grep -q 'not found'; \
+    done
 
 ARG PACKAGE_VERSION
 ENV PACKAGE_VERSION=${PACKAGE_VERSION}
@@ -130,15 +176,29 @@ COPY --from=builder /out/ /out/
 RUN apt-get update \
     && apt-get install -y --no-install-recommends /out/*.deb \
     && rm -rf /var/lib/apt/lists/* \
-    && for binary in sender receiver producer consumer; do \
+    && for binary in sender receiver producer consumer clock_probe; do \
         set +e; \
         "/usr/libexec/spectral-task/bin/$binary" --help >/tmp/output 2>&1; \
         status=$?; \
         set -e; \
-        test "$status" -eq 2; \
+        if test "$status" -ne 2; then \
+            cat /tmp/output >&2; \
+            echo "$binary --help exited with $status, expected 2" >&2; \
+            exit 1; \
+        fi; \
     done \
-    && ! ldd /usr/libexec/spectral-task/bin/sender | grep -q 'not found' \
-    && ! ldd /usr/libexec/spectral-task/bin/receiver | grep -q 'not found' \
+    && for binary in sender receiver clock_probe; do \
+        if ldd "/usr/libexec/spectral-task/bin/$binary" \
+            | grep -q 'not found'; then \
+            ldd "/usr/libexec/spectral-task/bin/$binary" >&2; \
+            exit 1; \
+        fi; \
+    done \
+    && if ldd /usr/libexec/spectral-task/bin/dpdk-testpmd \
+        | grep -q 'not found'; then \
+        ldd /usr/libexec/spectral-task/bin/dpdk-testpmd >&2; \
+        exit 1; \
+    fi \
     && install -d /verified \
     && cp /out/*.deb /verified/
 

@@ -1,0 +1,143 @@
+[
+  [
+    {
+      "name": "receiver-1",
+      "runs": 3,
+      "reps": 3,
+      "consumers": 1,
+      "excluded_files": 0,
+      "samples_per_run": 483616,
+      "samples_pooled": 1450848,
+      "min": {
+        "median": 68866,
+        "lo": 68866,
+        "hi": 70928
+      },
+      "p50": {
+        "median": 72715,
+        "lo": 71248,
+        "hi": 73382
+      },
+      "p99": {
+        "median": 80829,
+        "lo": 79155,
+        "hi": 82133
+      },
+      "p99.9": {
+        "median": 97907,
+        "lo": 94949,
+        "hi": 101543
+      },
+      "p99.99": {
+        "median": 123729,
+        "lo": 117209,
+        "hi": 146004
+      },
+      "max": {
+        "median": 200512,
+        "lo": 127903,
+        "hi": 200512
+      },
+      "_resolvable": {
+        "p50": true,
+        "p99": true,
+        "p99.9": true,
+        "p99.99": true
+      }
+    }
+  ],
+  [
+    {
+      "name": "receiver-2",
+      "runs": 3,
+      "reps": 3,
+      "consumers": 1,
+      "excluded_files": 0,
+      "samples_per_run": 483616,
+      "samples_pooled": 1450848,
+      "min": {
+        "median": 41309,
+        "lo": 41309,
+        "hi": 43421
+      },
+      "p50": {
+        "median": 44748,
+        "lo": 43204,
+        "hi": 45365
+      },
+      "p99": {
+        "median": 47035,
+        "lo": 45880,
+        "hi": 47470
+      },
+      "p99.9": {
+        "median": 50262,
+        "lo": 49844,
+        "hi": 51095
+      },
+      "p99.99": {
+        "median": 102693,
+        "lo": 71849,
+        "hi": 163634
+      },
+      "max": {
+        "median": 322565,
+        "lo": 170014,
+        "hi": 322565
+      },
+      "_resolvable": {
+        "p50": true,
+        "p99": true,
+        "p99.9": true,
+        "p99.99": true
+      }
+    }
+  ],
+  [
+    {
+      "name": "receiver-3",
+      "runs": 3,
+      "reps": 3,
+      "consumers": 1,
+      "excluded_files": 0,
+      "samples_per_run": 483616,
+      "samples_pooled": 1450848,
+      "min": {
+        "median": 27658,
+        "lo": 27658,
+        "hi": 29603
+      },
+      "p50": {
+        "median": 31121,
+        "lo": 29668,
+        "hi": 31737
+      },
+      "p99": {
+        "median": 34490,
+        "lo": 33033,
+        "hi": 34935
+      },
+      "p99.9": {
+        "median": 41275,
+        "lo": 39977,
+        "hi": 44923
+      },
+      "p99.99": {
+        "median": 166715,
+        "lo": 57047,
+        "hi": 280765
+      },
+      "max": {
+        "median": 392520,
+        "lo": 77092,
+        "hi": 392520
+      },
+      "_resolvable": {
+        "p50": true,
+        "p99": true,
+        "p99.9": true,
+        "p99.99": true
+      }
+    }
+  ]
+]

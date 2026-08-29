@@ -14,6 +14,14 @@ depends:
   - libc6 (>= 2.39)
   - libgcc-s1
   - libstdc++6
+  - dpdk
+  - librte-eal24
+  - librte-ethdev24
+  - librte-mbuf24
+  - librte-mempool24
+  - librte-mempool-ring24
+  - librte-net24
+  - librte-net-ena24
 
 contents:
   - src: package/usr/libexec/spectral-task

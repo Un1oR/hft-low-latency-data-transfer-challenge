@@ -34,7 +34,10 @@ inline constexpr size_t kCacheLine = 64;
 inline constexpr size_t kHeaderWriteIndexOffset = 64;
 inline constexpr size_t kHeaderSize = 128;
 inline constexpr size_t kSlotFrameOffset = kCacheLine;
-inline constexpr size_t kSlotSize = 640;
+inline constexpr size_t kSlotSize =
+    ((kSlotFrameOffset + kFrameWordCount * kFrameWordSize + kCacheLine - 1) /
+     kCacheLine) *
+    kCacheLine;
 
 struct alignas(kCacheLine) Slot {
   // Publication sequence for this slot; 0 means "never written". The producer
@@ -61,7 +64,7 @@ static_assert(sizeof(Header) == kHeaderSize);
 static_assert(offsetof(Slot, frame) == kSlotFrameOffset);
 static_assert(sizeof(Slot) == kSlotSize);
 
-inline constexpr uint32_t kMagic = 0x53484d33;  // "SHM3"
+inline constexpr uint32_t kMagic = 0x53484d34;  // "SHM4"
 
 inline size_t region_size(uint32_t slots) {
   return sizeof(Header) + static_cast<size_t>(slots) * sizeof(Slot);

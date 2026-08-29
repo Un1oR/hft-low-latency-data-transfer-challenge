@@ -1,0 +1,58 @@
+{
+  "raw": {
+    "name": "claude-c86cc26ab2e8-r2000000-n1-20260828T075704Z",
+    "runs": 3,
+    "reps": 3,
+    "consumers": 1,
+    "excluded_files": 0,
+    "samples_per_run": 483616,
+    "samples_pooled": 1450848,
+    "min": {
+      "median": 10426,
+      "lo": 10426,
+      "hi": 11044
+    },
+    "p50": {
+      "median": 14886,
+      "lo": 14696,
+      "hi": 15112
+    },
+    "p99": {
+      "median": 19215,
+      "lo": 18706,
+      "hi": 19825
+    },
+    "p99.9": {
+      "median": 65550,
+      "lo": 48661,
+      "hi": 112850
+    },
+    "p99.99": {
+      "median": 198450,
+      "lo": 167292,
+      "hi": 215670
+    },
+    "max": {
+      "median": 236150,
+      "lo": 188002,
+      "hi": 236150
+    },
+    "_resolvable": {
+      "p50": true,
+      "p99": true,
+      "p99.9": true,
+      "p99.99": true
+    }
+  },
+  "clock_correction_ns": 0,
+  "clock_method": "aws_ena_phc",
+  "clock_uncertainty_ns": 53354,
+  "corrected_ns": {
+    "min": 10426,
+    "p50": 14886,
+    "p99": 19215,
+    "p99_9": 65550,
+    "p99_99": 198450,
+    "max": 236150
+  }
+}

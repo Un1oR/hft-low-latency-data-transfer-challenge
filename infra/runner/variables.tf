@@ -4,6 +4,17 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
+variable "availability_zone" {
+  description = "Явная AZ для временного стенда. Null выбирает первую зону, где доступны типы runner и NAT."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.availability_zone == null || startswith(var.availability_zone, var.aws_region)
+    error_message = "availability_zone должна принадлежать выбранному aws_region."
+  }
+}
+
 variable "runner_instance_type" {
   description = "Целевой серверный x86 instance type. m8a.xlarge даёт четыре физических ядра без SMT."
   type        = string

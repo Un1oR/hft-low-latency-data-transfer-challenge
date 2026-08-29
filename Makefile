@@ -5,12 +5,31 @@ SHELL := /bin/bash
 CMAKE_PRESET ?= release
 DEB_VERSION ?=
 AWS_RUNNER_PACKAGE ?=
+AWS_RUNNER_AVAILABILITY_ZONE ?=
 AWS_RUNNER_TTL_MINUTES ?= 15
 AWS_RUNNER_MESSAGE_COUNT ?= 1000000
 AWS_RUNNER_MESSAGE_RATE ?= 200000
+AWS_RUNNER_WARMUP_MS ?= 2000
+AWS_RUNNER_STAGE_TIMESTAMPS ?= 0
+AWS_RUNNER_DPDK_RX_HARDWARE_TIMESTAMPS ?= 0
+AWS_RUNNER_DPDK_RX_BURST_SIZE ?= 32
+AWS_RUNNER_DPDK_RX_FREE_THRESHOLD ?= 0
+AWS_RUNNER_BATCH_WAIT_NS ?= 1200
+AWS_RUNNER_BATCH_TARGET_FRAMES ?= auto
+AWS_RUNNER_BATCH_PPS_BUDGET ?= 2000000
+AWS_RUNNER_LLQ_PROBE_MINIMAL_WIRE ?= 0
+AWS_RUNNER_LLQ_PROBE_MIXED_WIRE ?= 0
+AWS_RUNNER_COMPACT_WIRE ?= 0
+AWS_RUNNER_COMPACT_WIRE_MIXED ?= 0
+AWS_RUNNER_DPDK_LLQ_POLICY ?= 1
+AWS_RUNNER_RECEIVER_COUNT ?= 1
+AWS_RUNNER_MAX_CLOCK_ERROR_NS ?= 150000
+AWS_RUNNER_CLOCK_PROBE ?= 0
+AWS_RUNNER_NETWORKING_BACKEND ?= socket
 AWS_RUNNER_RUN_ID ?=
 AWS_RUNNER_AUTO_APPROVE ?= 0
 AWS_RUNNER_COMPACT_OUTPUT ?= 0
+export AWS_RUNNER_AVAILABILITY_ZONE
 
 HARNESS_DIR := $(CURDIR)/harness
 HARNESS_BIN := $(HARNESS_DIR)/bin
@@ -126,6 +145,8 @@ endef
 	aws-cluster-up aws-cluster-start aws-cluster-stop \
 	aws-cluster-update aws-cluster-extend \
 	aws-cluster-run aws-cluster-fetch aws-cluster-status aws-cluster-audit aws-cluster-down \
+	aws-cluster-dpdk-prepare aws-cluster-dpdk-verify aws-cluster-dpdk-ready \
+	aws-cluster-phc-prepare aws-cluster-phc-verify aws-cluster-phc-ready \
 	aws-cluster-e2e aws-cluster-cost
 
 all: build
@@ -185,6 +206,23 @@ aws-cluster-run:
 	AWS_RUNNER_TTL_MINUTES="$(AWS_RUNNER_TTL_MINUTES)" \
 	AWS_RUNNER_MESSAGE_COUNT="$(AWS_RUNNER_MESSAGE_COUNT)" \
 	AWS_RUNNER_MESSAGE_RATE="$(AWS_RUNNER_MESSAGE_RATE)" \
+	AWS_RUNNER_WARMUP_MS="$(AWS_RUNNER_WARMUP_MS)" \
+	AWS_RUNNER_STAGE_TIMESTAMPS="$(AWS_RUNNER_STAGE_TIMESTAMPS)" \
+	AWS_RUNNER_DPDK_RX_HARDWARE_TIMESTAMPS="$(AWS_RUNNER_DPDK_RX_HARDWARE_TIMESTAMPS)" \
+	AWS_RUNNER_DPDK_RX_BURST_SIZE="$(AWS_RUNNER_DPDK_RX_BURST_SIZE)" \
+	AWS_RUNNER_DPDK_RX_FREE_THRESHOLD="$(AWS_RUNNER_DPDK_RX_FREE_THRESHOLD)" \
+	AWS_RUNNER_BATCH_WAIT_NS="$(AWS_RUNNER_BATCH_WAIT_NS)" \
+	AWS_RUNNER_BATCH_TARGET_FRAMES="$(AWS_RUNNER_BATCH_TARGET_FRAMES)" \
+	AWS_RUNNER_BATCH_PPS_BUDGET="$(AWS_RUNNER_BATCH_PPS_BUDGET)" \
+	AWS_RUNNER_LLQ_PROBE_MINIMAL_WIRE="$(AWS_RUNNER_LLQ_PROBE_MINIMAL_WIRE)" \
+	AWS_RUNNER_LLQ_PROBE_MIXED_WIRE="$(AWS_RUNNER_LLQ_PROBE_MIXED_WIRE)" \
+	AWS_RUNNER_COMPACT_WIRE="$(AWS_RUNNER_COMPACT_WIRE)" \
+	AWS_RUNNER_COMPACT_WIRE_MIXED="$(AWS_RUNNER_COMPACT_WIRE_MIXED)" \
+	AWS_RUNNER_DPDK_LLQ_POLICY="$(AWS_RUNNER_DPDK_LLQ_POLICY)" \
+	AWS_RUNNER_RECEIVER_COUNT="$(AWS_RUNNER_RECEIVER_COUNT)" \
+	AWS_RUNNER_MAX_CLOCK_ERROR_NS="$(AWS_RUNNER_MAX_CLOCK_ERROR_NS)" \
+	AWS_RUNNER_CLOCK_PROBE="$(AWS_RUNNER_CLOCK_PROBE)" \
+	AWS_RUNNER_NETWORKING_BACKEND="$(AWS_RUNNER_NETWORKING_BACKEND)" \
 	AWS_RUNNER_AUTO_APPROVE="$(AWS_RUNNER_AUTO_APPROVE)" \
 	"$(AWS_RUNNER_SCRIPT)" run
 
@@ -194,6 +232,26 @@ aws-cluster-fetch:
 
 aws-cluster-status:
 	@"$(AWS_RUNNER_SCRIPT)" status
+
+aws-cluster-dpdk-prepare:
+	@"$(AWS_RUNNER_SCRIPT)" dpdk-prepare
+
+aws-cluster-dpdk-verify:
+	@"$(AWS_RUNNER_SCRIPT)" dpdk-verify
+
+aws-cluster-dpdk-ready:
+	@"$(AWS_RUNNER_SCRIPT)" dpdk-ready
+
+aws-cluster-phc-prepare:
+	@"$(AWS_RUNNER_SCRIPT)" phc-prepare
+
+aws-cluster-phc-verify:
+	@AWS_RUNNER_MAX_CLOCK_ERROR_NS="$(AWS_RUNNER_MAX_CLOCK_ERROR_NS)" \
+	"$(AWS_RUNNER_SCRIPT)" phc-verify
+
+aws-cluster-phc-ready:
+	@AWS_RUNNER_MAX_CLOCK_ERROR_NS="$(AWS_RUNNER_MAX_CLOCK_ERROR_NS)" \
+	"$(AWS_RUNNER_SCRIPT)" phc-ready
 
 aws-cluster-audit:
 	@"$(AWS_RUNNER_SCRIPT)" audit
@@ -209,6 +267,9 @@ aws-cluster-e2e: deb
 	AWS_RUNNER_TTL_MINUTES="$(AWS_RUNNER_TTL_MINUTES)" \
 	AWS_RUNNER_MESSAGE_COUNT="$(AWS_RUNNER_MESSAGE_COUNT)" \
 	AWS_RUNNER_MESSAGE_RATE="$(AWS_RUNNER_MESSAGE_RATE)" \
+	AWS_RUNNER_WARMUP_MS="$(AWS_RUNNER_WARMUP_MS)" \
+	AWS_RUNNER_RECEIVER_COUNT="$(AWS_RUNNER_RECEIVER_COUNT)" \
+	AWS_RUNNER_MAX_CLOCK_ERROR_NS="$(AWS_RUNNER_MAX_CLOCK_ERROR_NS)" \
 	AWS_RUNNER_AUTO_APPROVE="$(AWS_RUNNER_AUTO_APPROVE)" \
 	AWS_RUNNER_COMPACT_OUTPUT=1 \
 	"$(AWS_RUNNER_SCRIPT)" e2e
@@ -989,6 +1050,8 @@ help:
 	echo "  make aws-cluster-stop       pause all EC2; compute billing stops, EBS remains"
 	echo "  make aws-cluster-start      start NAT and runners, arm and verify a new TTL"
 	echo "  make aws-cluster-status     show Terraform outputs and live EC2 states"
+	echo "  make aws-cluster-dpdk-ready prepare all data ENIs and run testpmd -> testpmd"
+	echo "  make aws-cluster-phc-ready  install stock AWS kernel + ENA PHC and verify clocks"
 	echo "  make aws-cluster-audit      verify that no billable cluster resources remain"
 	echo "  make aws-cluster-down       destroy the cluster and verify EC2/EBS cleanup"
 	echo "  make aws-cluster-e2e        down/up/run/stop/fetch/start/stop with timings"

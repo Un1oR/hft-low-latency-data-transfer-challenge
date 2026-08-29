@@ -70,7 +70,11 @@ locals {
     toset(data.aws_ec2_instance_type_offerings.runner.locations),
     toset(data.aws_ec2_instance_type_offerings.nat.locations),
   )))
-  availability_zone    = local.compatible_availability_zones[0]
+  availability_zone = (
+    var.availability_zone != null
+    ? var.availability_zone
+    : local.compatible_availability_zones[0]
+  )
   benchmark_node_count = 4
   runner_root_gib      = 24
   nat_root_gib         = 8
@@ -85,7 +89,10 @@ locals {
   package_object_key = "${local.package_prefix}/spectral-task.deb"
   # Относительный timer нужен только до появления SSM. Рабочий и продлеваемый
   # TTL задаётся абсолютным time_offset.expires через association cluster_ttl.
-  bootstrap_ttl_minutes = 15
+  # Чистая установка ядра, ENA и DPDK занимает несколько минут, а повтор после
+  # частично завершённого apply не должен потерять NAT посередине bootstrap.
+  # Рабочий TTL всё равно задаётся отдельным абсолютным Scheduler/association.
+  bootstrap_ttl_minutes = 30
   required_standard_vcpus = (
     local.benchmark_node_count * data.aws_ec2_instance_type.runner.default_vcpus
     + data.aws_ec2_instance_type.nat.default_vcpus
@@ -96,6 +103,13 @@ check "stopped_cluster_is_paused" {
   assert {
     condition     = var.cluster_power_state == "running" || var.cluster_paused
     error_message = "Перед остановкой EC2 переведите cluster_paused в true, чтобы отключить внешний и локальные TTL."
+  }
+}
+
+check "availability_zone_is_compatible" {
+  assert {
+    condition     = contains(local.compatible_availability_zones, local.availability_zone)
+    error_message = "В availability_zone должны одновременно предлагаться runner_instance_type и nat_instance_type. Совместимые зоны: ${join(", ", local.compatible_availability_zones)}."
   }
 }
 
@@ -210,6 +224,13 @@ resource "aws_subnet" "private" {
   map_public_ip_on_launch = false
 
   tags = { Name = "spectral-runner-private" }
+}
+
+resource "aws_placement_group" "precision_time" {
+  name     = "spectral-runner-precision-time"
+  strategy = "precision-time"
+
+  tags = { Name = "spectral-runner-precision-time" }
 }
 
 resource "aws_route_table" "public" {
@@ -396,9 +417,10 @@ resource "aws_instance" "nat" {
 
   # Auto-assigned public IPv4 освобождается при stop и выдаётся заново при
   # start. AWS Provider читает поле как false у stopped-инстанса и без этого
-  # пытается заменить NAT вместо обычного запуска.
+  # пытается заменить NAT вместо обычного запуска. Latest AMI выбирается при
+  # создании стенда; публикация следующего образа не должна менять живой стенд.
   lifecycle {
-    ignore_changes = [associate_public_ip_address]
+    ignore_changes = [ami, associate_public_ip_address]
   }
 
   tags = merge(local.common_instance_tags, {
@@ -428,6 +450,7 @@ resource "aws_instance" "runner" {
   vpc_security_group_ids      = [aws_security_group.runner.id]
   associate_public_ip_address = false
   iam_instance_profile        = aws_iam_instance_profile.runner.name
+  placement_group             = aws_placement_group.precision_time.name
 
   instance_initiated_shutdown_behavior = "terminate"
 
@@ -450,6 +473,14 @@ resource "aws_instance" "runner" {
   })
   user_data_replace_on_change = true
 
+  # data.aws_ami.ubuntu выбирает latest только при создании стенда. Иначе
+  # обычное обновление benchmark-пакета пересоздаёт все узлы, как только
+  # Canonical публикует следующий образ. Намеренная смена AMI делается явным
+  # terraform -replace, чтобы одновременно начать новую измерительную эпоху.
+  lifecycle {
+    ignore_changes = [ami]
+  }
+
   tags = merge(local.common_instance_tags, {
     Name = "spectral-benchmark-node-${count.index + 1}"
     Role = count.index == 0 ? "source" : "receiver"
@@ -461,6 +492,29 @@ resource "aws_instance" "runner" {
     aws_route.private_internet,
     terraform_data.capacity_guard,
   ]
+}
+
+# DPDK никогда не забирает основной ENI: он остаётся у Linux для SSM,
+# bootstrap и аварийного восстановления. Второй интерфейс используется только
+# как data plane и может безопасно переключаться между ena и PCI-драйвером DPDK.
+resource "aws_network_interface" "runner_data" {
+  count = local.benchmark_node_count
+
+  subnet_id       = aws_subnet.private.id
+  security_groups = [aws_security_group.runner.id]
+
+  tags = merge(local.common_instance_tags, {
+    Name = "spectral-benchmark-data-${count.index + 1}"
+    Role = "data"
+  })
+}
+
+resource "aws_network_interface_attachment" "runner_data" {
+  count = local.benchmark_node_count
+
+  instance_id          = aws_instance.runner[count.index].id
+  network_interface_id = aws_network_interface.runner_data[count.index].id
+  device_index         = 1
 }
 
 # Power state является частью желаемого состояния Terraform. Оркестратор делает
@@ -490,9 +544,12 @@ resource "aws_ssm_association" "runner_bootstrap" {
     commandLine = join("\n", [
       "export PACKAGE_PATH='spectral-task.deb'",
       "export EXPECTED_SHA256='${local.package_sha256}'",
+      "export PHC_TARGET_KERNEL='6.17.0-1020-aws'",
+      file("${path.module}/scripts/phc-prepare.sh"),
+      file("${path.module}/scripts/dpdk-prepare.sh"),
       file("${path.module}/templates/runner-bootstrap.sh"),
     ])
-    executionTimeout = "300"
+    executionTimeout = "900"
   }
 
   targets {
@@ -506,6 +563,7 @@ resource "aws_ssm_association" "runner_bootstrap" {
 
   depends_on = [
     aws_iam_role_policy.runner_package,
+    aws_network_interface_attachment.runner_data,
     aws_route.private_internet,
     aws_s3_object.package,
   ]

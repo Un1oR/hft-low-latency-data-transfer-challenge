@@ -1,0 +1,21 @@
+{
+  "method": "aws_ena_phc",
+  "source_before_error_bound_ns": 35317,
+  "receiver_before_error_bound_ns": 32199,
+  "source_after_error_bound_ns": 28740,
+  "receiver_after_error_bound_ns": 35103,
+  "before_pair_error_bound_ns": 67516,
+  "after_pair_error_bound_ns": 63843,
+  "phc_uncertainty_ns": 67516,
+  "before_offset_ns": -16399,
+  "before_direction_disagreement_ns": 114369,
+  "after_offset_ns": 68652,
+  "after_direction_disagreement_ns": 68702,
+  "offset_drift_ns": 85051,
+  "correction_ns": 0,
+  "uncertainty_ns": 67516,
+  "probe_method": "udp_bidirectional_probe",
+  "probe_correction_ns": 26126,
+  "probe_uncertainty_ns": 156894,
+  "status": "valid"
+}

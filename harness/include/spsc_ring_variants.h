@@ -11,9 +11,9 @@
 
 namespace shm::spsc::experimental {
 
-inline constexpr uint32_t kCursorMagic = 0x43504332;       // "CPC2"
-inline constexpr uint32_t kSplitPaddedMagic = 0x53504333;  // "SPC3"
-inline constexpr uint32_t kSplitDenseMagic = 0x44504333;   // "DPC3"
+inline constexpr uint32_t kCursorMagic = 0x43504334;       // "CPC4"
+inline constexpr uint32_t kSplitPaddedMagic = 0x53504335;  // "SPC5"
+inline constexpr uint32_t kSplitDenseMagic = 0x44504334;   // "DPC4"
 
 // Classic SPSC ownership: producer and consumer publish global cursors and
 // cache the other side's cursor locally. This is the shared-head/tail baseline.
@@ -23,7 +23,9 @@ struct alignas(kCacheLine) CursorSlot {
 };
 
 static_assert(offsetof(CursorSlot, frame) == kCacheLine);
-static_assert(sizeof(CursorSlot) == kCacheLine + kFrameCap);
+static_assert(sizeof(CursorSlot) ==
+              ((kCacheLine + kFrameCap + kCacheLine - 1) / kCacheLine) *
+                  kCacheLine);
 
 inline size_t cursor_region_size(uint32_t slots) {
   return sizeof(Header) + static_cast<size_t>(slots) * sizeof(CursorSlot);
@@ -165,7 +167,8 @@ struct alignas(kCacheLine) SplitFrame {
 
 static_assert(sizeof(PaddedControl) == kCacheLine);
 static_assert(sizeof(DenseControl) == 16);
-static_assert(sizeof(SplitFrame) == kFrameCap);
+static_assert(sizeof(SplitFrame) ==
+              ((kFrameCap + kCacheLine - 1) / kCacheLine) * kCacheLine);
 
 inline constexpr size_t align_to_cache_line(size_t value) {
   return (value + kCacheLine - 1) & ~(kCacheLine - 1);

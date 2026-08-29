@@ -1,0 +1,12 @@
+{
+  "method": "aws_ena_phc",
+  "source_before_error_bound_ns": 27907,
+  "receiver_before_error_bound_ns": 23515,
+  "source_after_error_bound_ns": 32066,
+  "receiver_after_error_bound_ns": 23814,
+  "before_pair_error_bound_ns": 51422,
+  "after_pair_error_bound_ns": 55880,
+  "correction_ns": 0,
+  "uncertainty_ns": 55880,
+  "status": "valid"
+}

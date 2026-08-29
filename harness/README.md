@@ -25,16 +25,21 @@ harness/
 
 ## Message format
 
-Every message is a fixed-size, 64-byte-aligned struct beginning with a common
-`Header`, followed by type-specific market-data fields (`message.h`):
+Every message is a fixed-size struct beginning with a common `Header`, followed
+by compact type-specific market-data fields (`message.h`):
 
 ```
-Header: seq_id (u64), send_ts_ns (u64), type (u16), version (u16), body_len (u32)
+Header: seq_id (u64), send_ts_ns (u64), instrument (u16), type (u8), flags
+(u8), exchange/matching timestamp deltas (i32)
 
-Trade      symbol/venue/currencies, ids, price, quantity, aggressor side, flags, ...
-Bbo        symbol/venue, best bid/ask price+size, order counts, flags, ...
-OrderBook  symbol/venue, update ids, 5 bid levels + 5 ask levels, checksum, ...
+Trade      integer price/quantity, id, flags, recoverable running totals (80 B)
+Bbo        integer best bid, spread, sizes and order counts (64 B)
+OrderBook  update id, 5 bid levels + 5 ask levels and checksum (160 B)
 ```
+
+Symbol, venue and currencies are session reference data addressed by the
+numeric instrument id. Prices and quantities are carried once as integer
+ticks/lots. A mixed stream averages about 101 bytes per event.
 
 `seq_id` is a monotonic counter starting at 1; `send_ts_ns` is stamped
 immediately before publish. Those two `Header` fields are all the consumer needs

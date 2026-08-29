@@ -13,6 +13,26 @@ output "runner_private_ips" {
   description = "Приватные IPv4-адреса benchmark nodes в одной подсети."
 }
 
+output "runner_data_private_ips" {
+  value       = aws_network_interface.runner_data[*].private_ip
+  description = "Приватные IPv4-адреса отдельных data ENI для DPDK."
+}
+
+output "runner_data_mac_addresses" {
+  value       = aws_network_interface.runner_data[*].mac_address
+  description = "MAC-адреса отдельных data ENI в порядке benchmark nodes."
+}
+
+output "runner_data_network_interface_ids" {
+  value       = aws_network_interface.runner_data[*].id
+  description = "ID отдельных data ENI, которые можно передавать DPDK без потери SSM."
+}
+
+output "availability_zone" {
+  value       = local.availability_zone
+  description = "Availability Zone, общая для benchmark nodes и временного NAT."
+}
+
 output "runner_has_public_ip" {
   value       = anytrue([for instance in aws_instance.runner : instance.public_ip != ""])
   description = "Должно оставаться false для всех benchmark nodes."
@@ -75,6 +95,11 @@ output "benchmark_node_count" {
 output "runner_instance_type" {
   value       = var.runner_instance_type
   description = "Instance type benchmark nodes для расчёта публичной On-Demand цены."
+}
+
+output "precision_time_placement_group" {
+  value       = aws_placement_group.precision_time.name
+  description = "Placement group со стратегией precision-time для всех benchmark nodes."
 }
 
 output "nat_instance_type" {

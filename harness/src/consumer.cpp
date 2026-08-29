@@ -4,13 +4,15 @@
 // harness.
 //
 // Usage: consumer [--shm NAME] [--slots N] [--count N] [--from-edge]
-//                 [--csv FILE] [--idle-ms MS]
+//                 [--warmup-through-seq N] [--csv FILE] [--stage-csv FILE]
+//                 [--idle-ms MS]
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "message.h"
@@ -28,8 +30,10 @@ struct Config {
   std::string shm_name = "/fanout_ring";
   uint32_t slots = 1024;
   uint64_t count = 0;
+  uint64_t warmup_through_seq = 0;
   bool from_edge = false;
   std::string csv;
+  std::string stage_csv;
   uint64_t idle_ms = 2000;
   RingKind ring_kind = RingKind::Sequence;
 };
@@ -70,8 +74,12 @@ Config parse_args(int argc, char** argv) {
     if (a == "--shm") c.shm_name = next();
     else if (a == "--slots") c.slots = static_cast<uint32_t>(std::stoul(next()));
     else if (a == "--count") c.count = std::stoull(next());
+    else if (a == "--warmup-through-seq") {
+      c.warmup_through_seq = std::stoull(next());
+    }
     else if (a == "--from-edge") c.from_edge = true;
     else if (a == "--csv") c.csv = next();
+    else if (a == "--stage-csv") c.stage_csv = next();
     else if (a == "--idle-ms") c.idle_ms = std::stoull(next());
     else if (a == "--ring") c.ring_kind = parse_ring_kind(next());
     else {
@@ -124,6 +132,68 @@ bool write_csv(const std::string& path,
   return ok;
 }
 
+struct StageObservation {
+  uint64_t seq_id;
+  uint64_t e2e_latency_ns;
+  int64_t source_to_transport_ns;
+  int64_t transport_to_receiver_ns;
+  int64_t transport_to_hardware_receiver_ns;
+  int64_t hardware_to_software_receiver_ns;
+  int64_t hardware_to_dpdk_burst_ns;
+  int64_t dpdk_burst_to_software_receiver_ns;
+  int64_t receiver_to_consumer_ns;
+  uint64_t receiver_software_realtime_ns;
+  uint64_t dpdk_rx_burst_return_realtime_ns;
+};
+
+bool write_stage_csv(const std::string& path,
+                     const std::vector<StageObservation>& observations) {
+  FILE* csv = std::fopen(path.c_str(), "w");
+  if (!csv) {
+    std::fprintf(stderr, "fopen(%s) failed: %s\n", path.c_str(),
+                 std::strerror(errno));
+    return false;
+  }
+
+  bool ok = std::fprintf(
+                csv,
+                "seq,e2e_latency_ns,source_to_transport_ns,"
+                "transport_to_receiver_ns,"
+                "transport_to_hardware_receiver_ns,"
+                "hardware_to_software_receiver_ns,"
+                "hardware_to_dpdk_burst_ns,"
+                "dpdk_burst_to_software_receiver_ns,"
+                "receiver_to_consumer_ns,"
+                "receiver_software_realtime_ns,"
+                "dpdk_rx_burst_return_realtime_ns\n") >= 0;
+  for (const auto& observation : observations) {
+    if (std::fprintf(
+            csv, "%llu,%llu,%lld,%lld,%lld,%lld,%lld,%lld,%lld,%llu,%llu\n",
+            (unsigned long long)observation.seq_id,
+            (unsigned long long)observation.e2e_latency_ns,
+            (long long)observation.source_to_transport_ns,
+            (long long)observation.transport_to_receiver_ns,
+            (long long)observation.transport_to_hardware_receiver_ns,
+            (long long)observation.hardware_to_software_receiver_ns,
+            (long long)observation.hardware_to_dpdk_burst_ns,
+            (long long)observation.dpdk_burst_to_software_receiver_ns,
+            (long long)observation.receiver_to_consumer_ns,
+            (unsigned long long)observation.receiver_software_realtime_ns,
+            (unsigned long long)
+                observation.dpdk_rx_burst_return_realtime_ns) <
+        0) {
+      ok = false;
+      break;
+    }
+  }
+  if (std::fclose(csv) != 0) ok = false;
+  if (!ok) {
+    std::fprintf(stderr, "failed to write stage CSV %s: %s\n", path.c_str(),
+                 std::strerror(errno));
+  }
+  return ok;
+}
+
 template <typename Ring>
 size_t ring_region_size(uint32_t slots) {
   return Ring::region_size(slots);
@@ -137,10 +207,16 @@ int run(const Config& cfg) {
   ring.attach(seg.base(), cfg.slots, /*init=*/false);
 
   metrics::Accumulator acc(cfg.count ? cfg.count : 1u << 20);
+  std::vector<StageObservation> stage_observations;
+  if (!cfg.stage_csv.empty()) {
+    stage_observations.reserve(cfg.count ? cfg.count : 1u << 20);
+  }
 
   uint64_t read_index = cfg.from_edge ? ring.live_edge() : 0;
   uint64_t received = 0;
+  uint64_t warmup_seen = 0;
   uint64_t lapped_events = 0;
+  uint64_t missing_stage_timestamps = 0;
   const uint64_t idle_ns = cfg.idle_ms * 1000000ull;
   uint64_t last_progress = util::now_ns();
 
@@ -159,11 +235,80 @@ int run(const Config& cfg) {
     if (status == Ring::FrameStatus::kOk) {
       const uint64_t recv_ts = util::now_ns();
       const auto* hdr = reinterpret_cast<const msg::Header*>(frame);
-      const uint64_t latency =
-          recv_ts > hdr->send_ts_ns ? recv_ts - hdr->send_ts_ns : 0;
-      acc.record(hdr->seq_id, latency);
+      shm::spsc::StageTimestamps stage_timestamps{};
+      if constexpr (std::is_same_v<Ring, shm::spsc::SequenceRing>) {
+        if (!cfg.stage_csv.empty()) {
+          stage_timestamps = ring.stage_timestamps(read_index);
+        }
+      }
+      if (hdr->seq_id <= cfg.warmup_through_seq) {
+        ++warmup_seen;
+      } else {
+        const uint64_t latency =
+            recv_ts > hdr->send_ts_ns ? recv_ts - hdr->send_ts_ns : 0;
+        acc.record(hdr->seq_id, latency);
+        if (!cfg.stage_csv.empty()) {
+          if (stage_timestamps.transport_send_ts_ns == 0 ||
+              stage_timestamps.transport_receive_ts_ns == 0) {
+            ++missing_stage_timestamps;
+          } else {
+            stage_observations.push_back({
+                .seq_id = hdr->seq_id,
+                .e2e_latency_ns = latency,
+                .source_to_transport_ns =
+                    static_cast<int64_t>(
+                        stage_timestamps.transport_send_ts_ns) -
+                    static_cast<int64_t>(hdr->send_ts_ns),
+                .transport_to_receiver_ns =
+                    static_cast<int64_t>(
+                        stage_timestamps.transport_receive_ts_ns) -
+                    static_cast<int64_t>(
+                        stage_timestamps.transport_send_ts_ns),
+                .transport_to_hardware_receiver_ns =
+                    stage_timestamps.hardware_receive_realtime_ns == 0
+                        ? 0
+                        : static_cast<int64_t>(
+                              stage_timestamps.hardware_receive_realtime_ns) -
+                              static_cast<int64_t>(
+                                  stage_timestamps.transport_send_ts_ns),
+                .hardware_to_software_receiver_ns =
+                    stage_timestamps.hardware_receive_realtime_ns == 0
+                        ? 0
+                        : static_cast<int64_t>(
+                              stage_timestamps.transport_receive_ts_ns) -
+                              static_cast<int64_t>(
+                              stage_timestamps.hardware_receive_realtime_ns),
+                .hardware_to_dpdk_burst_ns =
+                    stage_timestamps.dpdk_rx_burst_return_realtime_ns == 0 ||
+                            stage_timestamps.hardware_receive_realtime_ns == 0
+                        ? 0
+                        : static_cast<int64_t>(
+                              stage_timestamps
+                                  .dpdk_rx_burst_return_realtime_ns) -
+                              static_cast<int64_t>(stage_timestamps
+                                                       .hardware_receive_realtime_ns),
+                .dpdk_burst_to_software_receiver_ns =
+                    stage_timestamps.dpdk_rx_burst_return_realtime_ns == 0
+                        ? 0
+                        : static_cast<int64_t>(
+                              stage_timestamps.transport_receive_ts_ns) -
+                              static_cast<int64_t>(
+                                  stage_timestamps
+                                      .dpdk_rx_burst_return_realtime_ns),
+                .receiver_to_consumer_ns =
+                    static_cast<int64_t>(recv_ts) -
+                    static_cast<int64_t>(
+                        stage_timestamps.transport_receive_ts_ns),
+                .receiver_software_realtime_ns =
+                    stage_timestamps.transport_receive_ts_ns,
+                .dpdk_rx_burst_return_realtime_ns =
+                    stage_timestamps.dpdk_rx_burst_return_realtime_ns,
+            });
+          }
+        }
+        ++received;
+      }
       ring.commit(read_index);
-      ++received;
       ++read_index;
       last_progress = recv_ts;
     } else if (status == Ring::FrameStatus::kLapped) {
@@ -174,10 +319,24 @@ int run(const Config& cfg) {
     }
   }
 
-  fprintf(stderr, "consumer: lapped %llu times\n",
+  fprintf(stderr,
+          "consumer: warmup_through_seq=%llu warmup_seen=%llu measured=%llu "
+          "lapped=%llu\n",
+          (unsigned long long)cfg.warmup_through_seq,
+          (unsigned long long)warmup_seen,
+          (unsigned long long)received,
           (unsigned long long)lapped_events);
   print_report(acc.report());
   if (!cfg.csv.empty() && !write_csv(cfg.csv, acc.observations())) return 1;
+  if (missing_stage_timestamps != 0) {
+    fprintf(stderr, "consumer: missing stage timestamps for %llu frames\n",
+            (unsigned long long)missing_stage_timestamps);
+    return 1;
+  }
+  if (!cfg.stage_csv.empty() &&
+      !write_stage_csv(cfg.stage_csv, stage_observations)) {
+    return 1;
+  }
   return 0;
 }
 
@@ -185,6 +344,10 @@ int run(const Config& cfg) {
 
 int main(int argc, char** argv) {
   const Config cfg = parse_args(argc, argv);
+  if (!cfg.stage_csv.empty() && cfg.ring_kind != RingKind::Sequence) {
+    fprintf(stderr, "--stage-csv requires --ring sequence\n");
+    return 2;
+  }
   if (cfg.ring_kind == RingKind::Cursor) {
     return run<shm::spsc::experimental::CursorRing>(cfg);
   }

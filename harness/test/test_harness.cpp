@@ -207,7 +207,14 @@ static void test_sequence_ring_zero_copy_ownership() {
   assert(first != nullptr);
   std::memset(first, 0x11, sizeof(msg::Trade));
   reinterpret_cast<msg::Header*>(first)->seq_id = 1;
-  producer.publish_reserved(sizeof(msg::Trade));
+  producer.publish_reserved(
+      sizeof(msg::Trade),
+      shm::spsc::StageTimestamps{
+          .transport_send_ts_ns = 100,
+          .transport_receive_ts_ns = 200,
+          .hardware_receive_realtime_ns = 150,
+          .dpdk_rx_burst_return_realtime_ns = 175,
+      });
 
   uint8_t* second = producer.reserve();
   assert(second != nullptr);
@@ -228,6 +235,10 @@ static void test_sequence_ring_zero_copy_ownership() {
   assert(len == sizeof(msg::Trade));
   assert(reinterpret_cast<const msg::Header*>(view)->seq_id == 1);
   assert(view[sizeof(msg::Header)] == 0x11);
+  const auto first_stage = consumer.stage_timestamps(0);
+  assert(first_stage.transport_send_ts_ns == 100);
+  assert(first_stage.transport_receive_ts_ns == 200);
+  assert(first_stage.hardware_receive_realtime_ns == 150);
 
   consumer.commit(0);
   uint8_t* third = producer.reserve();
@@ -267,7 +278,7 @@ static void test_spsc_ring_zero_copy_wrap() {
     auto* frame = reinterpret_cast<msg::Trade*>(producer.reserve());
     assert(frame != nullptr);
     frame->header.seq_id = sequence;
-    frame->header.body_len = sizeof(*frame);
+    frame->header.type = static_cast<uint8_t>(msg::Type::Trade);
     producer.publish_reserved(sizeof(*frame));
 
     const uint8_t* view = nullptr;
@@ -345,7 +356,7 @@ static void test_split_sequence_layout_wrap(size_t region_size,
     auto* frame = reinterpret_cast<msg::Trade*>(producer.reserve());
     assert(frame != nullptr);
     frame->header.seq_id = sequence;
-    frame->header.body_len = sizeof(*frame);
+    frame->header.type = static_cast<uint8_t>(msg::Type::Trade);
     producer.publish_reserved(sizeof(*frame));
     const uint8_t* view = nullptr;
     uint32_t len = 0;

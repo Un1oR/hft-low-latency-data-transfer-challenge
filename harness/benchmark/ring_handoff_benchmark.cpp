@@ -316,10 +316,8 @@ metrics::Report run(const Config& config, size_t region_size,
                                     : sizeof(msg::OrderBook);
     auto* header = reinterpret_cast<msg::Header*>(frame);
     header->type = config.frame_kind == FrameKind::kTrade
-                       ? static_cast<uint16_t>(msg::Type::Trade)
-                       : static_cast<uint16_t>(msg::Type::OrderBook);
-    header->version = 1;
-    header->body_len = frame_size;
+                       ? static_cast<uint8_t>(msg::Type::Trade)
+                       : static_cast<uint8_t>(msg::Type::OrderBook);
 
     const uint64_t interval_ns = 1'000'000'000ull / config.rate;
     uint64_t next_send = util::now_ns();
@@ -339,8 +337,6 @@ metrics::Report run(const Config& config, size_t region_size,
             reinterpret_cast<msg::Header*>(destination);
         destination_header->seq_id = sequence_id;
         destination_header->type = header->type;
-        destination_header->version = header->version;
-        destination_header->body_len = frame_size;
         destination_header->send_ts_ns =
             read_measurement_clock(config.clock_kind, fast_clock);
         writer.publish_reserved(frame_size);

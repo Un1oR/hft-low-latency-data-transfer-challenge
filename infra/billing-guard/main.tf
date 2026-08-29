@@ -84,15 +84,15 @@ resource "aws_sns_topic_policy" "this" {
 }
 
 resource "aws_budgets_budget" "monthly" {
-  name         = "spectral-monthly-${var.budget_amount_usd}-usd"
+  name         = "spectral-monthly-net-${var.budget_amount_usd}-usd"
   budget_type  = "COST"
   limit_amount = tostring(var.budget_amount_usd)
   limit_unit   = "USD"
   time_unit    = "MONTHLY"
 
   cost_types {
-    include_credit = false
-    include_refund = false
+    include_credit = true
+    include_refund = true
   }
 
   notification {

@@ -1,0 +1,47 @@
+[
+  {
+    "name": "claude-c86cc26ab2e8-r2000000-n1-20260828T021832Z",
+    "runs": 3,
+    "reps": 3,
+    "consumers": 1,
+    "excluded_files": 0,
+    "samples_per_run": 483616,
+    "samples_pooled": 1450848,
+    "min": {
+      "median": 36591,
+      "lo": 36591,
+      "hi": 38112
+    },
+    "p50": {
+      "median": 42419,
+      "lo": 41634,
+      "hi": 43120
+    },
+    "p99": {
+      "median": 50222,
+      "lo": 49866,
+      "hi": 50564
+    },
+    "p99.9": {
+      "median": 70615,
+      "lo": 66510,
+      "hi": 76176
+    },
+    "p99.99": {
+      "median": 92267,
+      "lo": 82619,
+      "hi": 99076
+    },
+    "max": {
+      "median": 112817,
+      "lo": 87994,
+      "hi": 112817
+    },
+    "_resolvable": {
+      "p50": true,
+      "p99": true,
+      "p99.9": true,
+      "p99.99": true
+    }
+  }
+]
