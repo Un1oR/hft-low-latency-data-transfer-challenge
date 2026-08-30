@@ -1,6 +1,6 @@
 # Low-latency data transfer
 
-🇷🇺 [Русская версия](README.md)
+🇷🇺 [Русская версия](TASK.md)
 
 Hi! Welcome to the **Low-latency data transfer** challenge from the HFT fund Spectral::Technologies. In this challenge you'll be solving one of the problems we've faced in our own work — building a system that transfers data from one source server to other servers with minimal latency.
 
