@@ -394,9 +394,13 @@ cmd_run() {
   local receiver_args receiver_command receiver_params ready_params ready_command
   local source_args source_command source_params cleanup_command summary_command
   local summary_params summary_json artifact_command artifact_params artifact_key
-  local package_sha runner_commit dirty
+  local package_sha runner_commit dirty placement_group placement_group_id
+  local placement_group_json
+  local placement_strategy precision_time_placement_group
+  local precision_time_placement_group_id
   local installed_spectral_sha spectral_package candidate candidate_sha
   local correction uncertainty phc_uncertainty b64_path raw_dir snapshot_dir attempt
+  local delivery_validation expected_measured
   local source_before receiver_before source_after receiver_after
   local pair_before pair_after value
   local before_offset before_disagreement after_offset after_disagreement
@@ -404,7 +408,7 @@ cmd_run() {
   local ready=0 receiver_index receiver_number receiver_out artifact_dir
   local -a ids ips receiver_ids receiver_ips receiver_commands receiver_outs
   local -a before_offsets before_disagreements after_offsets after_disagreements
-  local -a source_argv summary_files raw_summary_files
+  local -a source_argv summary_files raw_summary_files latency_csvs
   local -a receiver_clock_uncertainties probe_corrections probe_uncertainties
 
   for tool in aws jq terraform base64 tar; do require_command "$tool"; done
@@ -506,27 +510,26 @@ cmd_run() {
     receiver_commands[$receiver_index]="$receiver_command"
   done
 
+  # Проверяем все receiver одним SSM command. Последовательные SSM round trips
+  # однажды растянули READY больше чем на consumer idle timeout: первые два
+  # receiver закончили с нулём событий, пока третий ещё ждал source.
   ready_params='{"commands":["ss -H -lun | grep -Eq \":51000[[:space:]]\""]}'
-  for receiver_index in "${!receiver_ids[@]}"; do
-    receiver_number=$((receiver_index + 1))
-    receiver_id="${receiver_ids[$receiver_index]}"
-    ready=0
-    for attempt in $(seq 1 30); do
-      ready_command="$(aws ssm send-command --region "$region" \
-        --instance-ids "$receiver_id" --document-name AWS-RunShellScript \
-        --timeout-seconds 30 --parameters "$ready_params" \
-        --query 'Command.CommandId' --output text)"
-      if wait_command "$ready_command" 1 >/dev/null 2>&1; then
-        ready=1
-        break
-      fi
-      sleep 1
-    done
-    if (( ready != 1 )); then
-      echo "Claude baseline receiver-$receiver_number не перешёл в READY" >&2
-      exit 1
+  ready=0
+  for attempt in $(seq 1 30); do
+    ready_command="$(aws ssm send-command --region "$region" \
+      --instance-ids "${receiver_ids[@]}" --document-name AWS-RunShellScript \
+      --timeout-seconds 30 --parameters "$ready_params" \
+      --query 'Command.CommandId' --output text)"
+    if wait_command "$ready_command" "${#receiver_ids[@]}" >/dev/null 2>&1; then
+      ready=1
+      break
     fi
+    sleep 1
   done
+  if (( ready != 1 )); then
+    echo "Claude baseline receiver-узлы не перешли в READY одновременно" >&2
+    exit 1
+  fi
 
   source_argv=(
     /usr/libexec/claude-baseline/scripts/bench.sh
@@ -667,6 +670,19 @@ cmd_run() {
     raw_summary_files[$receiver_index]="$snapshot_dir/receiver-$receiver_number-summary-raw.json"
     summary_files[$receiver_index]="$snapshot_dir/receiver-$receiver_number-summary.json"
     jq . <<<"$summary_json" >"${raw_summary_files[$receiver_index]}"
+    jq -e '
+      length == 1 and .[0] != null and
+      (.[0] |
+        (.min.median | type == "number") and
+        (.p50.median | type == "number") and
+        (.p99.median | type == "number") and
+        (."p99.9".median | type == "number") and
+        (."p99.99".median | type == "number") and
+        (.max.median | type == "number"))
+    ' "${raw_summary_files[$receiver_index]}" >/dev/null || {
+      echo "Claude receiver-$receiver_number не вернул полную сводку latency" >&2
+      exit 1
+    }
     jq -n --slurpfile raw "${raw_summary_files[$receiver_index]}" \
       --argjson receiver_index "$receiver_number" \
       --arg instance_id "$receiver_id" --arg private_ip "$receiver_ip" \
@@ -735,6 +751,27 @@ cmd_run() {
     base64 --decode "$b64_path" >"$artifact_dir/result.tar.gz"
     tar -xzf "$artifact_dir/result.tar.gz" -C "$artifact_dir"
   done
+
+  expected_measured=$((samples - drop))
+  delivery_validation="$snapshot_dir/delivery-validation.json"
+  mapfile -t latency_csvs < <(
+    find "$raw_dir" -type f -name 'rep*_c0.csv' -printf '%P\n' | sort
+  )
+  if (( ${#latency_csvs[@]} != receiver_count * reps )); then
+    echo "Ожидалось $((receiver_count * reps)) Claude CSV, найдено ${#latency_csvs[@]}" >&2
+    exit 1
+  fi
+  (
+    cd "$raw_dir"
+    python3 "$repo_root/scripts/validate-latency-sequences.py" \
+      --drop "$drop" --expected-samples "$expected_measured" \
+      "${latency_csvs[@]}"
+  ) >"$delivery_validation"
+  jq --slurpfile delivery "$delivery_validation" \
+    '. + {delivery_valid:$delivery[0].valid, delivery_validation:$delivery[0]}' \
+    "$snapshot_dir/summary.json" >"$snapshot_dir/summary.json.tmp"
+  mv "$snapshot_dir/summary.json.tmp" "$snapshot_dir/summary.json"
+
   (
     cd "$raw_dir"
     find receivers -type f \( -name 'result.tar.gz' -o -name 'rep*_c*.csv' \) \
@@ -744,6 +781,20 @@ cmd_run() {
   package_sha="$(sha256sum "${CLAUDE_BASELINE_PACKAGE:-$package_default}" | awk '{print $1}')"
   runner_commit="$(git -C "$repo_root" rev-parse HEAD)"
   dirty=false; [[ -n "$(git -C "$repo_root" status --porcelain)" ]] && dirty=true
+  placement_group="$(terraform -chdir="$runner_dir" output -raw benchmark_placement_group)"
+  precision_time_placement_group="$(terraform -chdir="$runner_dir" output -raw precision_time_placement_group)"
+  precision_time_placement_group_id="$(terraform -chdir="$runner_dir" output -raw precision_time_placement_group_id)"
+  placement_group_json="$(aws ec2 describe-placement-groups \
+    --region "$region" --group-names "$placement_group" \
+    --query 'PlacementGroups[0]' --output json)"
+  placement_group_id="$(jq -r '.GroupId' <<<"$placement_group_json")"
+  placement_strategy="$(jq -r '.Strategy' <<<"$placement_group_json")"
+  if [[ "$placement_strategy" != "cluster" ||
+        "$(jq -r '.ParentGroupId' <<<"$placement_group_json")" != "$precision_time_placement_group_id" ||
+        "$(jq -r '.State' <<<"$placement_group_json")" != "available" ]]; then
+    echo "Claude run: benchmark placement group не имеет ожидаемый cluster/precision-time parent" >&2
+    exit 1
+  fi
   jq -n --arg run_id "$run_id" --arg baseline_commit "$expected_commit" \
     --arg package_sha256 "$package_sha" --arg runner_commit "$runner_commit" \
     --argjson runner_dirty "$dirty" --arg source_instance_id "$source_id" \
@@ -753,22 +804,35 @@ cmd_run() {
     --argjson receivers "$receiver_count" --argjson rate "$rate" \
     --argjson reps "$reps" --argjson samples_per_rep "$samples" \
     --argjson dropped_prefix_per_rep "$drop" \
+    --argjson measured_samples_per_rep "$expected_measured" \
     --argjson clock_probe_enabled "$clock_probe" \
     --argjson clock_uncertainty_ns "$phc_uncertainty" \
+    --arg placement_group "$placement_group" \
+    --arg placement_group_id "$placement_group_id" \
+    --arg placement_strategy "$placement_strategy" \
+    --arg precision_time_placement_group "$precision_time_placement_group" \
+    --arg precision_time_placement_group_id "$precision_time_placement_group_id" \
     '{run_id:$run_id, baseline_commit:$baseline_commit,
       package_sha256:$package_sha256, runner_commit:$runner_commit,
       runner_dirty:$runner_dirty, networking_backend:"udp", duplicate:false,
       receivers:$receivers, rate:$rate, reps:$reps, samples_per_rep:$samples_per_rep,
       dropped_prefix_per_rep:$dropped_prefix_per_rep,
+      measured_samples_per_rep:$measured_samples_per_rep,
       clock_probe_enabled:$clock_probe_enabled,
       source_instance_id:$source_instance_id,
       receiver_instance_ids:$receiver_instance_ids,
       source_ip:$source_ip, receiver_ips:$receiver_ips,
+      placement_group:$placement_group,
+      placement_group_id:$placement_group_id,
+      placement_strategy:$placement_strategy,
+      precision_time_placement_group:$precision_time_placement_group,
+      precision_time_placement_group_id:$precision_time_placement_group_id,
       clock_method:"aws_ena_phc",
       clock_correction_ns:0,
       clock_uncertainty_ns:$clock_uncertainty_ns}' >"$snapshot_dir/manifest.json"
   cp "$snapshot_dir/manifest.json" "$snapshot_dir/summary-raw.json" \
     "$snapshot_dir/summary.json" "$snapshot_dir/raw-artifacts.sha256" \
+    "$delivery_validation" \
     "$raw_dir/"
   cp "$snapshot_dir"/clock-bracket-receiver-*.json "$raw_dir/"
   aws s3 cp "$snapshot_dir/manifest.json" \

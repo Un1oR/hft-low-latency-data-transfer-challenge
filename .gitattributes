@@ -1,1 +1,4 @@
 *.ipynb filter=nbstripout diff=ipynb
+# Сдаваемый notebook хранит уже рассчитанные таблицы и графики, чтобы его можно
+# было открыть без AWS и многогигабайтных исходных CSV.
+analysis.ipynb -filter diff=ipynb

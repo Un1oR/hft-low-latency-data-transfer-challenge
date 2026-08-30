@@ -34,6 +34,8 @@ usage() {
                                по этапам; по умолчанию 0
   AWS_RUNNER_DPDK_RX_HARDWARE_TIMESTAMPS  1 использует аппаратную метку ENA
                                рядом с программной; требует DPDK и stage timestamps
+  AWS_RUNNER_ALLOW_INVALID_DELIVERY  1 разрешает диагностический прогон после
+                               записи delivery_valid=false; по умолчанию 0
   AWS_RUNNER_DPDK_RX_BURST_SIZE  максимум дейтаграмм за один вызов DPDK RX,
                                от 1 до 32; по умолчанию 32
   AWS_RUNNER_DPDK_RX_FREE_THRESHOLD  сколько освобождённых RX-буферов накопить
@@ -761,7 +763,9 @@ write_run_manifest() {
   local batch_target_frames_requested="${12}"
   local batch_target_mode="${13}"
   local batch_pps_budget="${14}"
-  local commit dirty package_sha placement_group sender_assembly
+  local commit dirty package_sha placement_group placement_group_id
+  local placement_strategy precision_time_placement_group
+  local precision_time_placement_group_id placement_group_json sender_assembly
   local llq_probe_minimal_wire llq_probe_mixed_wire compact_wire
   local compact_wire_mixed
   local dpdk_llq_policy
@@ -839,7 +843,20 @@ write_run_manifest() {
   else
     clock_probe_json=false
   fi
-  placement_group="$(${terraform_cmd[@]} output -raw precision_time_placement_group)"
+  placement_group="$(${terraform_cmd[@]} output -raw benchmark_placement_group)"
+  precision_time_placement_group="$(${terraform_cmd[@]} output -raw precision_time_placement_group)"
+  precision_time_placement_group_id="$(${terraform_cmd[@]} output -raw precision_time_placement_group_id)"
+  placement_group_json="$(aws ec2 describe-placement-groups \
+    --region "$region" --group-names "$placement_group" \
+    --query 'PlacementGroups[0]' --output json)"
+  placement_group_id="$(jq -r '.GroupId' <<<"$placement_group_json")"
+  placement_strategy="$(jq -r '.Strategy' <<<"$placement_group_json")"
+  if [[ "$placement_strategy" != "cluster" ||
+        "$(jq -r '.ParentGroupId' <<<"$placement_group_json")" != "$precision_time_placement_group_id" ||
+        "$(jq -r '.State' <<<"$placement_group_json")" != "available" ]]; then
+    echo "Benchmark placement group не является available cluster с ожидаемым precision-time parent" >&2
+    return 1
+  fi
   ids_json="$(${terraform_cmd[@]} output -json runner_instance_ids)"
   control_ips_json="$(${terraform_cmd[@]} output -json runner_private_ips)"
   data_macs_json='[]'
@@ -877,6 +894,10 @@ write_run_manifest() {
     --argjson dirty "$dirty" \
     --arg package_sha256 "$package_sha" \
     --arg placement_group "$placement_group" \
+    --arg placement_group_id "$placement_group_id" \
+    --arg placement_strategy "$placement_strategy" \
+    --arg precision_time_placement_group "$precision_time_placement_group" \
+    --arg precision_time_placement_group_id "$precision_time_placement_group_id" \
     --argjson runner_instance_ids "$ids_json" \
     --argjson runner_private_ips "$ips_json" \
     --argjson runner_control_private_ips "$control_ips_json" \
@@ -919,6 +940,10 @@ write_run_manifest() {
       dirty: $dirty,
       package_sha256: $package_sha256,
       placement_group: $placement_group,
+      placement_group_id: $placement_group_id,
+      placement_strategy: $placement_strategy,
+      precision_time_placement_group: $precision_time_placement_group,
+      precision_time_placement_group_id: $precision_time_placement_group_id,
       runner_instance_ids: $runner_instance_ids,
       runner_private_ips: $runner_private_ips,
       runner_control_private_ips: $runner_control_private_ips,
@@ -2098,8 +2123,17 @@ cmd_run() {
   done
 
   fetch_run_artifacts "$run_id"
+  local summary_status=0 summary_path
+  summary_path="$repo_root/artifacts/aws-runner/$run_id/fanout-summary.json"
   python3 "$repo_root/scripts/summarize-fanout.py" \
-    "$repo_root/artifacts/aws-runner/$run_id"
+    "$repo_root/artifacts/aws-runner/$run_id" || summary_status=$?
+  if (( summary_status != 0 )); then
+    if [[ "${AWS_RUNNER_ALLOW_INVALID_DELIVERY:-0}" != "1" ]] ||
+       ! jq -e '.delivery_valid == false' "$summary_path" >/dev/null 2>&1; then
+      return "$summary_status"
+    fi
+    echo "Диагностический прогон завершён с ожидаемой невалидной доставкой"
+  fi
   trap - EXIT
 
   if (( source_status != 0 || receiver_status != 0 || clock_after_status != 0 ||
@@ -2120,7 +2154,9 @@ cmd_status() {
     echo "Кластер отсутствует: Terraform state пуст"
     return
   fi
+  echo "--- Желаемое состояние и сохранённые идентификаторы Terraform ---"
   "${terraform_cmd[@]}" output
+  echo "--- Фактически существующие EC2 (живой запрос AWS) ---"
   resources="$(aws ec2 describe-instances \
     --region "$region" \
     --filters \
@@ -2129,10 +2165,13 @@ cmd_status() {
     --query 'Reservations[].Instances[].{Id:InstanceId,State:State.Name,Type:InstanceType,Name:Tags[?Key==`Name`]|[0].Value}' \
     --output json)"
   jq . <<<"$resources"
+  if [[ "$(jq 'length' <<<"$resources")" == "0" ]]; then
+    echo "Живых или остановленных EC2 с тегом Project=spectral-task нет; IDs выше остались только в Terraform state"
+  fi
 }
 
 cmd_audit() {
-  local account_id bucket_name live volumes buckets schedules associations
+  local account_id bucket_name live volumes buckets schedules associations placements
   local role role_json roles='[]'
 
   account_id="$(aws sts get-caller-identity --query Account --output text)"
@@ -2159,6 +2198,11 @@ cmd_audit() {
       select((.AssociationName // "") | startswith("spectral-runner-")) |
       .AssociationId
     ]')"
+  placements="$(aws ec2 describe-placement-groups \
+    --region "$region" \
+    --filters \
+      Name=group-name,Values=spectral-runner-cluster,spectral-runner-precision-time \
+    --query 'PlacementGroups[].GroupName' --output json)"
 
   for role in spectral-runner spectral-runner-nat spectral-runner-expiry; do
     if role_json="$(aws iam get-role --role-name "$role" \
@@ -2173,10 +2217,11 @@ cmd_audit() {
       --argjson buckets "$buckets" \
       --argjson schedules "$schedules" \
       --argjson associations "$associations" \
+      --argjson placements "$placements" \
       --argjson roles "$roles" \
-      '([$live, $volumes, $buckets, $schedules, $associations, $roles] |
+      '([$live, $volumes, $buckets, $schedules, $associations, $placements, $roles] |
         map(length) | add) == 0' >/dev/null; then
-    echo "AWS audit чист: EC2, EBS, S3, Scheduler, SSM Associations и runner IAM roles отсутствуют"
+    echo "AWS audit чист: EC2, EBS, S3, Scheduler, SSM Associations, placement groups и runner IAM roles отсутствуют"
     return 0
   fi
 
@@ -2187,9 +2232,11 @@ cmd_audit() {
     --argjson buckets "$buckets" \
     --argjson schedules "$schedules" \
     --argjson associations "$associations" \
+    --argjson placements "$placements" \
     --argjson roles "$roles" \
     '{instances:$instances, volumes:$volumes, buckets:$buckets,
-      schedules:$schedules, associations:$associations, roles:$roles}' >&2
+      schedules:$schedules, associations:$associations,
+      placement_groups:$placements, roles:$roles}' >&2
   return 1
 }
 

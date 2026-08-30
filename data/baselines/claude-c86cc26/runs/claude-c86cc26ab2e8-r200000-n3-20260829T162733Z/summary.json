@@ -1,0 +1,284 @@
+{
+  "receiver_count": 3,
+  "receivers": [
+    {
+      "receiver_index": 1,
+      "instance_id": "i-058874b504da2d85b",
+      "private_ip": "10.42.1.28",
+      "raw": {
+        "name": "receiver-1",
+        "runs": 1,
+        "reps": 1,
+        "consumers": 1,
+        "excluded_files": 0,
+        "samples_per_run": 1000000,
+        "samples_pooled": 1000000,
+        "min": {
+          "median": 104595,
+          "lo": 104595,
+          "hi": 104595
+        },
+        "p50": {
+          "median": 105906,
+          "lo": 105906,
+          "hi": 105906
+        },
+        "p99": {
+          "median": 109078,
+          "lo": 109078,
+          "hi": 109078
+        },
+        "p99.9": {
+          "median": 115849,
+          "lo": 115849,
+          "hi": 115849
+        },
+        "p99.99": {
+          "median": 232629,
+          "lo": 232629,
+          "hi": 232629
+        },
+        "max": {
+          "median": 390750,
+          "lo": 390750,
+          "hi": 390750
+        },
+        "_resolvable": {
+          "p50": true,
+          "p99": true,
+          "p99.9": true,
+          "p99.99": true
+        }
+      },
+      "primary_ns": {
+        "min": 104595,
+        "p50": 105906,
+        "p99": 109078,
+        "p99_9": 115849,
+        "p99_99": 232629,
+        "max": 390750
+      },
+      "clock_correction_ns": 0,
+      "clock_method": "aws_ena_phc",
+      "clock_uncertainty_ns": 64490,
+      "clock_probe_correction_ns": null,
+      "clock_probe_method": null,
+      "clock_probe_uncertainty_ns": null,
+      "corrected_ns": {
+        "min": 104595,
+        "p50": 105906,
+        "p99": 109078,
+        "p99_9": 115849,
+        "p99_99": 232629,
+        "max": 390750
+      }
+    },
+    {
+      "receiver_index": 2,
+      "instance_id": "i-03af1fd4646961599",
+      "private_ip": "10.42.1.45",
+      "raw": {
+        "name": "receiver-2",
+        "runs": 1,
+        "reps": 1,
+        "consumers": 1,
+        "excluded_files": 0,
+        "samples_per_run": 1000000,
+        "samples_pooled": 1000000,
+        "min": {
+          "median": 125312,
+          "lo": 125312,
+          "hi": 125312
+        },
+        "p50": {
+          "median": 126872,
+          "lo": 126872,
+          "hi": 126872
+        },
+        "p99": {
+          "median": 131517,
+          "lo": 131517,
+          "hi": 131517
+        },
+        "p99.9": {
+          "median": 142403,
+          "lo": 142403,
+          "hi": 142403
+        },
+        "p99.99": {
+          "median": 326764,
+          "lo": 326764,
+          "hi": 326764
+        },
+        "max": {
+          "median": 513644,
+          "lo": 513644,
+          "hi": 513644
+        },
+        "_resolvable": {
+          "p50": true,
+          "p99": true,
+          "p99.9": true,
+          "p99.99": true
+        }
+      },
+      "primary_ns": {
+        "min": 125312,
+        "p50": 126872,
+        "p99": 131517,
+        "p99_9": 142403,
+        "p99_99": 326764,
+        "max": 513644
+      },
+      "clock_correction_ns": 0,
+      "clock_method": "aws_ena_phc",
+      "clock_uncertainty_ns": 63614,
+      "clock_probe_correction_ns": null,
+      "clock_probe_method": null,
+      "clock_probe_uncertainty_ns": null,
+      "corrected_ns": {
+        "min": 125312,
+        "p50": 126872,
+        "p99": 131517,
+        "p99_9": 142403,
+        "p99_99": 326764,
+        "max": 513644
+      }
+    },
+    {
+      "receiver_index": 3,
+      "instance_id": "i-0bbff8ca7d2556c4f",
+      "private_ip": "10.42.1.130",
+      "raw": {
+        "name": "receiver-3",
+        "runs": 1,
+        "reps": 1,
+        "consumers": 1,
+        "excluded_files": 0,
+        "samples_per_run": 1000000,
+        "samples_pooled": 1000000,
+        "min": {
+          "median": 94527,
+          "lo": 94527,
+          "hi": 94527
+        },
+        "p50": {
+          "median": 97169,
+          "lo": 97169,
+          "hi": 97169
+        },
+        "p99": {
+          "median": 100598,
+          "lo": 100598,
+          "hi": 100598
+        },
+        "p99.9": {
+          "median": 106402,
+          "lo": 106402,
+          "hi": 106402
+        },
+        "p99.99": {
+          "median": 133330,
+          "lo": 133330,
+          "hi": 133330
+        },
+        "max": {
+          "median": 336815,
+          "lo": 336815,
+          "hi": 336815
+        },
+        "_resolvable": {
+          "p50": true,
+          "p99": true,
+          "p99.9": true,
+          "p99.99": true
+        }
+      },
+      "primary_ns": {
+        "min": 94527,
+        "p50": 97169,
+        "p99": 100598,
+        "p99_9": 106402,
+        "p99_99": 133330,
+        "max": 336815
+      },
+      "clock_correction_ns": 0,
+      "clock_method": "aws_ena_phc",
+      "clock_uncertainty_ns": 61408,
+      "clock_probe_correction_ns": null,
+      "clock_probe_method": null,
+      "clock_probe_uncertainty_ns": null,
+      "corrected_ns": {
+        "min": 94527,
+        "p50": 97169,
+        "p99": 100598,
+        "p99_9": 106402,
+        "p99_99": 133330,
+        "max": 336815
+      }
+    }
+  ],
+  "worst_receiver_primary_ns": {
+    "min": 125312,
+    "p50": 126872,
+    "p99": 131517,
+    "p99_9": 142403,
+    "p99_99": 326764,
+    "max": 513644
+  },
+  "delivery_valid": true,
+  "delivery_validation": {
+    "valid": true,
+    "files": [
+      {
+        "path": "receivers/i-03af1fd4646961599/rep1_c0.csv",
+        "rows_total": 1400000,
+        "dropped_prefix": 400000,
+        "rows_analyzed": 1000000,
+        "expected_samples": 1000000,
+        "sample_count_valid": true,
+        "first_seq": 460346,
+        "last_seq": 1460345,
+        "gaps": 0,
+        "duplicates": 0,
+        "reordered": 0,
+        "valid": true
+      },
+      {
+        "path": "receivers/i-058874b504da2d85b/rep1_c0.csv",
+        "rows_total": 1400000,
+        "dropped_prefix": 400000,
+        "rows_analyzed": 1000000,
+        "expected_samples": 1000000,
+        "sample_count_valid": true,
+        "first_seq": 460346,
+        "last_seq": 1460345,
+        "gaps": 0,
+        "duplicates": 0,
+        "reordered": 0,
+        "valid": true
+      },
+      {
+        "path": "receivers/i-0bbff8ca7d2556c4f/rep1_c0.csv",
+        "rows_total": 1400000,
+        "dropped_prefix": 400000,
+        "rows_analyzed": 1000000,
+        "expected_samples": 1000000,
+        "sample_count_valid": true,
+        "first_seq": 460346,
+        "last_seq": 1460345,
+        "gaps": 0,
+        "duplicates": 0,
+        "reordered": 0,
+        "valid": true
+      }
+    ],
+    "totals": {
+      "files": 3,
+      "rows_analyzed": 3000000,
+      "gaps": 0,
+      "duplicates": 0,
+      "reordered": 0
+    }
+  }
+}

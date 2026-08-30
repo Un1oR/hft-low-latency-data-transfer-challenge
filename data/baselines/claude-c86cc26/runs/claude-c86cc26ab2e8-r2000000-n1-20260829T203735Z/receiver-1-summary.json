@@ -1,0 +1,72 @@
+{
+  "receiver_index": 1,
+  "instance_id": "i-0d28a34a9fd3016e2",
+  "private_ip": "10.42.1.81",
+  "raw": {
+    "name": "receiver-1",
+    "runs": 1,
+    "reps": 1,
+    "consumers": 1,
+    "excluded_files": 0,
+    "samples_per_run": 1000000,
+    "samples_pooled": 1000000,
+    "min": {
+      "median": 16330,
+      "lo": 16330,
+      "hi": 16330
+    },
+    "p50": {
+      "median": 20390,
+      "lo": 20390,
+      "hi": 20390
+    },
+    "p99": {
+      "median": 24990,
+      "lo": 24990,
+      "hi": 24990
+    },
+    "p99.9": {
+      "median": 57921,
+      "lo": 57921,
+      "hi": 57921
+    },
+    "p99.99": {
+      "median": 156231,
+      "lo": 156231,
+      "hi": 156231
+    },
+    "max": {
+      "median": 184801,
+      "lo": 184801,
+      "hi": 184801
+    },
+    "_resolvable": {
+      "p50": true,
+      "p99": true,
+      "p99.9": true,
+      "p99.99": true
+    }
+  },
+  "primary_ns": {
+    "min": 16330,
+    "p50": 20390,
+    "p99": 24990,
+    "p99_9": 57921,
+    "p99_99": 156231,
+    "max": 184801
+  },
+  "clock_correction_ns": 0,
+  "clock_method": "aws_ena_phc",
+  "clock_uncertainty_ns": 69094,
+  "clock_probe_correction_ns": null,
+  "clock_probe_method": null,
+  "clock_probe_uncertainty_ns": null,
+  "corrected_ns": {
+    "min": 16330,
+    "p50": 20390,
+    "p99": 24990,
+    "p99_9": 57921,
+    "p99_99": 156231,
+    "max": 184801
+  }
+}

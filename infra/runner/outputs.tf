@@ -99,7 +99,22 @@ output "runner_instance_type" {
 
 output "precision_time_placement_group" {
   value       = aws_placement_group.precision_time.name
-  description = "Placement group со стратегией precision-time для всех benchmark nodes."
+  description = "Родительская placement group со стратегией precision-time."
+}
+
+output "precision_time_placement_group_id" {
+  value       = aws_placement_group.precision_time.placement_group_id
+  description = "ID родительской precision-time placement group."
+}
+
+output "benchmark_placement_group" {
+  value       = local.benchmark_placement_group_name
+  description = "Дочерняя cluster placement group, в которой запущены benchmark nodes."
+}
+
+output "benchmark_placement_strategy" {
+  value       = "cluster"
+  description = "Фактическая стратегия размещения benchmark nodes."
 }
 
 output "nat_instance_type" {

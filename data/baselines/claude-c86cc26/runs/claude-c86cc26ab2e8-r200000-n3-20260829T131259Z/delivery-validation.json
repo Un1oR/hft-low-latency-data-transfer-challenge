@@ -1,0 +1,54 @@
+{
+  "valid": true,
+  "files": [
+    {
+      "path": "receivers/i-066720ad728754160/rep1_c0.csv",
+      "rows_total": 1400000,
+      "dropped_prefix": 400000,
+      "rows_analyzed": 1000000,
+      "expected_samples": 1000000,
+      "sample_count_valid": true,
+      "first_seq": 460428,
+      "last_seq": 1460427,
+      "gaps": 0,
+      "duplicates": 0,
+      "reordered": 0,
+      "valid": true
+    },
+    {
+      "path": "receivers/i-06a34fca25b3540f5/rep1_c0.csv",
+      "rows_total": 1400000,
+      "dropped_prefix": 400000,
+      "rows_analyzed": 1000000,
+      "expected_samples": 1000000,
+      "sample_count_valid": true,
+      "first_seq": 460428,
+      "last_seq": 1460427,
+      "gaps": 0,
+      "duplicates": 0,
+      "reordered": 0,
+      "valid": true
+    },
+    {
+      "path": "receivers/i-08a97d17c6ceeae59/rep1_c0.csv",
+      "rows_total": 1400000,
+      "dropped_prefix": 400000,
+      "rows_analyzed": 1000000,
+      "expected_samples": 1000000,
+      "sample_count_valid": true,
+      "first_seq": 460428,
+      "last_seq": 1460427,
+      "gaps": 0,
+      "duplicates": 0,
+      "reordered": 0,
+      "valid": true
+    }
+  ],
+  "totals": {
+    "files": 3,
+    "rows_analyzed": 3000000,
+    "gaps": 0,
+    "duplicates": 0,
+    "reordered": 0
+  }
+}

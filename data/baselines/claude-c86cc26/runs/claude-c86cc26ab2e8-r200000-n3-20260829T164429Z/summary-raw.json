@@ -1,0 +1,143 @@
+[
+  [
+    {
+      "name": "receiver-1",
+      "runs": 1,
+      "reps": 1,
+      "consumers": 1,
+      "excluded_files": 0,
+      "samples_per_run": 1000000,
+      "samples_pooled": 1000000,
+      "min": {
+        "median": 106425,
+        "lo": 106425,
+        "hi": 106425
+      },
+      "p50": {
+        "median": 107664,
+        "lo": 107664,
+        "hi": 107664
+      },
+      "p99": {
+        "median": 110656,
+        "lo": 110656,
+        "hi": 110656
+      },
+      "p99.9": {
+        "median": 117206,
+        "lo": 117206,
+        "hi": 117206
+      },
+      "p99.99": {
+        "median": 165400,
+        "lo": 165400,
+        "hi": 165400
+      },
+      "max": {
+        "median": 287220,
+        "lo": 287220,
+        "hi": 287220
+      },
+      "_resolvable": {
+        "p50": true,
+        "p99": true,
+        "p99.9": true,
+        "p99.99": true
+      }
+    }
+  ],
+  [
+    {
+      "name": "receiver-2",
+      "runs": 1,
+      "reps": 1,
+      "consumers": 1,
+      "excluded_files": 0,
+      "samples_per_run": 1000000,
+      "samples_pooled": 1000000,
+      "min": {
+        "median": 122165,
+        "lo": 122165,
+        "hi": 122165
+      },
+      "p50": {
+        "median": 123512,
+        "lo": 123512,
+        "hi": 123512
+      },
+      "p99": {
+        "median": 126868,
+        "lo": 126868,
+        "hi": 126868
+      },
+      "p99.9": {
+        "median": 133635,
+        "lo": 133635,
+        "hi": 133635
+      },
+      "p99.99": {
+        "median": 293958,
+        "lo": 293958,
+        "hi": 293958
+      },
+      "max": {
+        "median": 408709,
+        "lo": 408709,
+        "hi": 408709
+      },
+      "_resolvable": {
+        "p50": true,
+        "p99": true,
+        "p99.9": true,
+        "p99.99": true
+      }
+    }
+  ],
+  [
+    {
+      "name": "receiver-3",
+      "runs": 1,
+      "reps": 1,
+      "consumers": 1,
+      "excluded_files": 0,
+      "samples_per_run": 1000000,
+      "samples_pooled": 1000000,
+      "min": {
+        "median": 101997,
+        "lo": 101997,
+        "hi": 101997
+      },
+      "p50": {
+        "median": 104333,
+        "lo": 104333,
+        "hi": 104333
+      },
+      "p99": {
+        "median": 107879,
+        "lo": 107879,
+        "hi": 107879
+      },
+      "p99.9": {
+        "median": 114246,
+        "lo": 114246,
+        "hi": 114246
+      },
+      "p99.99": {
+        "median": 147767,
+        "lo": 147767,
+        "hi": 147767
+      },
+      "max": {
+        "median": 215348,
+        "lo": 215348,
+        "hi": 215348
+      },
+      "_resolvable": {
+        "p50": true,
+        "p99": true,
+        "p99.9": true,
+        "p99.99": true
+      }
+    }
+  ]
+]

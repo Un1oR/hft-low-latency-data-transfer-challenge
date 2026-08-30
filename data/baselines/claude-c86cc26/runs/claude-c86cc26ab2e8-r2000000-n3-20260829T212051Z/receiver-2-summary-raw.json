@@ -1,0 +1,47 @@
+[
+  {
+    "name": "receiver-2",
+    "runs": 1,
+    "reps": 1,
+    "consumers": 1,
+    "excluded_files": 0,
+    "samples_per_run": 1000000,
+    "samples_pooled": 1000000,
+    "min": {
+      "median": 15177,
+      "lo": 15177,
+      "hi": 15177
+    },
+    "p50": {
+      "median": 17586,
+      "lo": 17586,
+      "hi": 17586
+    },
+    "p99": {
+      "median": 20091,
+      "lo": 20091,
+      "hi": 20091
+    },
+    "p99.9": {
+      "median": 25578,
+      "lo": 25578,
+      "hi": 25578
+    },
+    "p99.99": {
+      "median": 45151,
+      "lo": 45151,
+      "hi": 45151
+    },
+    "max": {
+      "median": 60328,
+      "lo": 60328,
+      "hi": 60328
+    },
+    "_resolvable": {
+      "p50": true,
+      "p99": true,
+      "p99.9": true,
+      "p99.99": true
+    }
+  }
+]

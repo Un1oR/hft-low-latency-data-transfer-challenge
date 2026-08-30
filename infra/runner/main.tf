@@ -85,8 +85,9 @@ locals {
   package_sha256 = filesha256(var.package_path)
   # Имя bucket и префикс source/ оставлены совместимыми с уже применённым
   # permissions boundary. Внутри теперь хранится только готовый .deb.
-  package_prefix     = "source/${local.package_sha256}"
-  package_object_key = "${local.package_prefix}/spectral-task.deb"
+  package_prefix                 = "source/${local.package_sha256}"
+  package_object_key             = "${local.package_prefix}/spectral-task.deb"
+  benchmark_placement_group_name = "spectral-runner-cluster"
   # Относительный timer нужен только до появления SSM. Рабочий и продлеваемый
   # TTL задаётся абсолютным time_offset.expires через association cluster_ttl.
   # Чистая установка ядра, ENA и DPDK занимает несколько минут, а повтор после
@@ -231,6 +232,94 @@ resource "aws_placement_group" "precision_time" {
   strategy = "precision-time"
 
   tags = { Name = "spectral-runner-precision-time" }
+}
+
+# AWS supports a precision-time parent for cluster placement groups, but the
+# hashicorp/aws aws_placement_group resource does not expose ParentGroupId yet.
+# Keep the missing API call inside Terraform lifecycle and verify the actual
+# relationship from EC2 before considering the resource created.
+resource "terraform_data" "benchmark_cluster" {
+  input = {
+    aws_region           = var.aws_region
+    group_name           = local.benchmark_placement_group_name
+    parent_group_id      = aws_placement_group.precision_time.placement_group_id
+    expected_project_tag = var.project_tag
+  }
+
+  triggers_replace = [
+    aws_placement_group.precision_time.placement_group_id,
+    local.benchmark_placement_group_name,
+  ]
+
+  provisioner "local-exec" {
+    interpreter = ["/usr/bin/env", "bash", "-c"]
+    environment = {
+      AWS_REGION           = self.output.aws_region
+      GROUP_NAME           = self.output.group_name
+      PARENT_GROUP_ID      = self.output.parent_group_id
+      EXPECTED_PROJECT_TAG = self.output.expected_project_tag
+    }
+    command = <<-EOT
+      set -Eeuo pipefail
+      if current="$(aws ec2 describe-placement-groups \
+          --region "$AWS_REGION" --group-names "$GROUP_NAME" \
+          --query 'PlacementGroups[0].[State,Strategy,ParentGroupId]' \
+          --output text 2>/dev/null)"; then
+        [[ "$current" == $'available\tcluster\t'"$PARENT_GROUP_ID" ]] || {
+          echo "Placement group $GROUP_NAME существует с неожиданными параметрами: $current" >&2
+          exit 1
+        }
+      else
+        aws ec2 create-placement-group \
+          --region "$AWS_REGION" \
+          --group-name "$GROUP_NAME" \
+          --strategy cluster \
+          --parent-group-id "$PARENT_GROUP_ID" \
+          --tag-specifications "ResourceType=placement-group,Tags=[{Key=Name,Value=$GROUP_NAME},{Key=Project,Value=$EXPECTED_PROJECT_TAG},{Key=ManagedBy,Value=terraform}]" \
+          --output json >/dev/null
+      fi
+      for attempt in $(seq 1 30); do
+        current="$(aws ec2 describe-placement-groups \
+          --region "$AWS_REGION" --group-names "$GROUP_NAME" \
+          --query 'PlacementGroups[0].[State,Strategy,ParentGroupId]' \
+          --output text)"
+        [[ "$current" == $'available\tcluster\t'"$PARENT_GROUP_ID" ]] && exit 0
+        sleep 1
+      done
+      echo "Placement group $GROUP_NAME не стала available с ожидаемым parent" >&2
+      exit 1
+    EOT
+  }
+
+  provisioner "local-exec" {
+    when        = destroy
+    on_failure  = fail
+    interpreter = ["/usr/bin/env", "bash", "-c"]
+    environment = {
+      AWS_REGION = self.output.aws_region
+      GROUP_NAME = self.output.group_name
+    }
+    command = <<-EOT
+      set -Eeuo pipefail
+      if ! aws ec2 describe-placement-groups \
+          --region "$AWS_REGION" --group-names "$GROUP_NAME" \
+          --output json >/dev/null 2>&1; then
+        exit 0
+      fi
+      aws ec2 delete-placement-group \
+        --region "$AWS_REGION" --group-name "$GROUP_NAME"
+      for attempt in $(seq 1 30); do
+        if ! aws ec2 describe-placement-groups \
+            --region "$AWS_REGION" --group-names "$GROUP_NAME" \
+            --output json >/dev/null 2>&1; then
+          exit 0
+        fi
+        sleep 1
+      done
+      echo "Placement group $GROUP_NAME не удалилась за 30 секунд" >&2
+      exit 1
+    EOT
+  }
 }
 
 resource "aws_route_table" "public" {
@@ -450,7 +539,7 @@ resource "aws_instance" "runner" {
   vpc_security_group_ids      = [aws_security_group.runner.id]
   associate_public_ip_address = false
   iam_instance_profile        = aws_iam_instance_profile.runner.name
-  placement_group             = aws_placement_group.precision_time.name
+  placement_group             = local.benchmark_placement_group_name
 
   instance_initiated_shutdown_behavior = "terminate"
 
@@ -491,6 +580,7 @@ resource "aws_instance" "runner" {
     aws_iam_role_policy.runner_package,
     aws_route.private_internet,
     terraform_data.capacity_guard,
+    terraform_data.benchmark_cluster,
   ]
 }
 

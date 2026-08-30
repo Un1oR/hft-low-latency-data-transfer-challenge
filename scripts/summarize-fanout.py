@@ -441,6 +441,7 @@ def main() -> int:
     private_ips = manifest["runner_private_ips"][1 : receiver_count + 1]
 
     reference_sequences: array | None = None
+    sequence_series: list[array] = []
     raw_series: list[array] = []
     corrected_series: list[array] = []
     receiver_summaries: list[dict[str, object]] = []
@@ -494,6 +495,7 @@ def main() -> int:
         )
         if reference_sequences is None:
             reference_sequences = sequences
+        sequence_series.append(sequences)
         receiver_valid = (
             sequence_stats["received"] == message_count
             and sequence_stats["first_seq"] == warmup_events + 1
@@ -574,9 +576,20 @@ def main() -> int:
     worst_receiver_latency_corrected = array("q")
     delivery_skew_primary = array("q")
     delivery_skew_corrected = array("q")
-    for sample_index in range(len(reference_sequences)):
-        raw_sample = [series[sample_index] for series in raw_series]
-        corrected_sample = [series[sample_index] for series in corrected_series]
+
+    def append_aligned_sample(sample_indexes: list[int]) -> None:
+        raw_sample = [
+            series[sample_index]
+            for series, sample_index in zip(
+                raw_series, sample_indexes, strict=True
+            )
+        ]
+        corrected_sample = [
+            series[sample_index]
+            for series, sample_index in zip(
+                corrected_series, sample_indexes, strict=True
+            )
+        ]
         worst_receiver_latency_primary.append(max(raw_sample))
         worst_receiver_latency_corrected.append(max(corrected_sample))
         delivery_skew_primary.append(max(raw_sample) - min(raw_sample))
@@ -584,24 +597,81 @@ def main() -> int:
             max(corrected_sample) - min(corrected_sample)
         )
 
+    sequences_identical = all(
+        sequences == reference_sequences for sequences in sequence_series
+    )
+    sequences_monotonic_unique = all(
+        int(receiver["duplicates"]) == 0
+        and int(receiver["reordered"]) == 0
+        for receiver in receiver_summaries
+    )
+    if sequences_identical:
+        for sample_index in range(len(reference_sequences)):
+            append_aligned_sample([sample_index] * receiver_count)
+    elif sequences_monotonic_unique:
+        # Lossy diagnostic runs have different sequence ranges. Align only
+        # sequence IDs present on every receiver; never compare equal indexes,
+        # because one missing datagram would shift the rest of the series.
+        indexes = [0] * receiver_count
+        while all(
+            sample_index < len(sequences)
+            for sample_index, sequences in zip(
+                indexes, sequence_series, strict=True
+            )
+        ):
+            current = [
+                sequences[sample_index]
+                for sequences, sample_index in zip(
+                    sequence_series, indexes, strict=True
+                )
+            ]
+            target = max(current)
+            if all(sequence == target for sequence in current):
+                append_aligned_sample(indexes)
+                indexes = [sample_index + 1 for sample_index in indexes]
+                continue
+            indexes = [
+                (
+                    bisect.bisect_left(sequences, target, sample_index)
+                    if sequence < target
+                    else sample_index
+                )
+                for sequences, sample_index, sequence in zip(
+                    sequence_series, indexes, current, strict=True
+                )
+            ]
+
+    aligned_samples = len(worst_receiver_latency_primary)
+    alignment_available = aligned_samples > 0
+
     summary = {
         "run_id": manifest["run_id"],
         "receiver_count": receiver_count,
         "message_count": message_count,
         "message_rate": manifest["message_rate"],
         "delivery_valid": delivery_valid,
+        "fanout_alignment_available": alignment_available,
+        "common_sequence_samples": aligned_samples,
         "receivers": receiver_summaries,
-        "worst_receiver_latency_corrected": percentile_summary(
-            worst_receiver_latency_corrected
+        "worst_receiver_latency_corrected": (
+            percentile_summary(worst_receiver_latency_corrected)
+            if alignment_available
+            else None
         ),
-        "worst_receiver_latency_primary": percentile_summary(
-            worst_receiver_latency_primary
+        "worst_receiver_latency_primary": (
+            percentile_summary(worst_receiver_latency_primary)
+            if alignment_available
+            else None
         ),
-        "inter_receiver_delivery_skew": percentile_summary(
-            delivery_skew_primary
+        "inter_receiver_delivery_skew": (
+            percentile_summary(delivery_skew_primary)
+            if alignment_available
+            else None
         ),
-        "inter_receiver_delivery_skew_corrected": percentile_summary(
-            delivery_skew_corrected
+        "inter_receiver_delivery_skew_corrected": (
+            percentile_summary(delivery_skew_corrected)
+            if alignment_available
+            else None
         ),
     }
     summary_path = run_dir / "fanout-summary.json"
