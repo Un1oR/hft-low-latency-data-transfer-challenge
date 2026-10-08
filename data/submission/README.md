@@ -1,7 +1,9 @@
 # Данные сдаваемого отчёта
 
-Этот каталог позволяет исполнить `analysis.ipynb` без доступа к AWS и без
-многогигабайтного каталога `artifacts/`.
+Этот каталог вместе с [`../ring-fix-ablation.csv`](../ring-fix-ablation.csv)
+позволяет исполнить `analysis.ipynb` без доступа к AWS и без многогигабайтного
+каталога `artifacts/`. Небольшая таблица `ring-fix-ablation.csv` используется
+только в приложении отчёта про исправление SPSC-очереди.
 
 В корне лежит основной срез на стенде `precision-time → cluster`. Подкаталог
 [`precision-time-only`](precision-time-only/README.md) содержит самостоятельный

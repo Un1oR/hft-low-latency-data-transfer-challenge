@@ -6,6 +6,7 @@
 /tmp/
 /dist/
 /data/latency*.csv
+/data/baselines/
 /artifacts/aws-runner/
 __pycache__/
 *.py[cod]

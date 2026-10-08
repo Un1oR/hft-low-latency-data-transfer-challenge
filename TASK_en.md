@@ -81,7 +81,6 @@ The main **differentiation** comes from the high percentiles (p99, p99.9, p99.99
 - **Any tools are allowed.** Any languages, libraries, AI agents.
 - **Reproducibility is mandatory.** The environment, the topology, how to run it, what hardware/network you measured on — all of that has to be recorded in your write-up.
 - **Deadline:** we accept solutions until 23:59 GMT+3 on 30 August 2026.
-- **Submission format:** described in [this document](how_to_submit_solution_en.md).
 
 By taking part in the competition you agree to the rules: https://spectral.tech/polozheniya-o-konkurse. If you have questions, write to the bot and we'll answer. https://t.me/spectral_challenge_bot
 

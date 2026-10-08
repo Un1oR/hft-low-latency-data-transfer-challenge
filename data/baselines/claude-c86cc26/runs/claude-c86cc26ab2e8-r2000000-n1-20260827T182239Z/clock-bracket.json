@@ -1,9 +1,0 @@
-{
-  "before_offset_ns": 842,
-  "before_direction_disagreement_ns": 18853,
-  "after_offset_ns": -9022,
-  "after_direction_disagreement_ns": 41969,
-  "offset_drift_ns": -9864,
-  "correction_ns": -4090,
-  "uncertainty_ns": 46901
-}
